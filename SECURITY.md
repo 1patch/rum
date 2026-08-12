@@ -12,13 +12,16 @@ about what it touches.
 
 - It reads page navigations, clicks, unhandled errors, web vitals and the timing
   of `fetch`/XHR calls the page makes.
-- It **strips query strings and fragments** from every URL attribute before
-  export, replacing them with `?<scrubbed>`. Password-reset tokens, invite
-  codes and email addresses in links do not leave the browser. `keepQueryStrings:
-  true` opts out; don't.
+- It records the **full URL** of each page and request, query string and
+  fragment included, because in a single-page app those are the only thing that
+  says which screen the visitor was on. So if your URLs carry password-reset
+  tokens, invite codes or email addresses, those values reach your telemetry.
+  Set `scrubQueryStrings: true` to replace every query and fragment with
+  `?<scrubbed>` before export — at the cost of collapsing distinct screens into
+  one, since a hash-routed app keeps its route there too.
 - It does not read form values, `localStorage`, cookies, or the DOM's text
   content, and it takes no screenshots or DOM recordings.
-- It sends to exactly one endpoint — the `tracesUrl` you configure — and ignores
+- It sends to exactly one endpoint — the `ingestUrl` you configure — and ignores
   its own requests so they can't feed back into your traces.
 
 The ingest token you pass is a **write-only bearer** for one tenant's
