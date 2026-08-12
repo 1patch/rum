@@ -69,11 +69,21 @@ export type RumOptions = {
 	 */
 	ignoreUrls?: (string | RegExp)[];
 	/**
-	 * Keep query strings on recorded URLs. Off by default, because query strings
-	 * carry password-reset tokens, invite codes and email addresses, and telemetry
-	 * storage is permanent. Turn it on only if you know your URLs are clean.
+	 * Drop the query string and fragment from every recorded URL, leaving
+	 * `…/path?<scrubbed>`. Off by default.
+	 *
+	 * It is off because the query and the fragment are frequently the only place
+	 * the URL says *which thing* — `?workflow=42`, or a hash route like
+	 * `#/workflows/42/runs/abc`. Scrubbing them turns "which workflow was the user
+	 * on" into an unanswerable question, and that question is most of why anyone
+	 * reads browser telemetry.
+	 *
+	 * Turn it on when your URLs carry secrets rather than identifiers —
+	 * password-reset tokens, magic-link codes, invite codes, email addresses. That
+	 * is a real risk and telemetry storage is permanent; it is just not the default
+	 * risk, and it is fixable at the source in a way that a lost route is not.
 	 */
-	keepQueryStrings?: boolean;
+	scrubQueryStrings?: boolean;
 	/**
 	 * Also forward `console.*` calls. Off by default: console lines carry
 	 * personal data far more often than spans do.
@@ -246,7 +256,7 @@ export function resolveOptions(
 		// that matters most is the one that keeps the exporter's own POSTs from
 		// being traced — which would generate spans, whose delivery generates spans.
 		ignoreUrls: [originMatcher(new URL(tracesUrl).origin), ...(options.ignoreUrls ?? [])],
-		scrubQueryStrings: options.keepQueryStrings !== true,
+		scrubQueryStrings: options.scrubQueryStrings === true,
 		captureConsole: options.captureConsole === true,
 		debug: options.debug === true,
 		insecureIngest: insecure,

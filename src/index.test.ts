@@ -17,6 +17,7 @@ type InitOptions = {
 	apiKey?: string;
 	applicationName?: string;
 	deploymentEnvironment?: string;
+	version?: string;
 	allowInsecureUrl?: boolean;
 	instrumentations?: Record<string, unknown>;
 	resourceAttributes?: Record<string, string>;
@@ -109,7 +110,6 @@ describe("startRum", () => {
 		expect(calls.init[0]?.url).toBe("https://acme.logger.onepatch.dev/v1/traces");
 		expect(calls.init[0]?.apiKey).toBe(valid.ingestToken);
 		expect(calls.init[0]?.applicationName).toBe("acme-web");
-		expect(calls.init[0]?.deploymentEnvironment).toBe("production");
 		expect(calls.init[0]?.allowInsecureUrl).toBe(false);
 	});
 
@@ -139,6 +139,16 @@ describe("startRum", () => {
 			"deployment.environment.name": "production",
 			"service.version": "9f1c0aa",
 		});
+	});
+
+	// ...and ONLY on the resource. Passing the SDK's own options alongside stamped
+	// `environment`, `deployment.environment` and `app.version` onto every single
+	// span — the same two facts, three more times, under names nothing queries.
+	// Read back off a real store before this was fixed.
+	test("does not also stamp environment and version onto every span", async () => {
+		await startRum({ ...valid, environment: "production", appVersion: "9f1c0aa" });
+		expect(calls.init[0]?.deploymentEnvironment).toBeUndefined();
+		expect(calls.init[0]?.version).toBeUndefined();
 	});
 
 	test("nothing set means no invented resource attributes", async () => {

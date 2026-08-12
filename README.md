@@ -42,7 +42,7 @@ There is no session replay. No DOM is captured, no keystrokes, no form contents.
 | `connectTracesTo` | Cross-origin backends to join traces with, as explicit origins. See below. |
 | `skipBackendCheck` | Skip the startup check on those origins. Read the next section first. |
 | `ignoreUrls` | Extra URLs to leave untraced. Your ingest origin is always on this list. |
-| `keepQueryStrings` | Keep query strings on recorded URLs. Off by default — see below. |
+| `scrubQueryStrings` | Drop query strings and fragments from recorded URLs. Off by default — see below. |
 | `captureConsole` | Also forward `console.*`. Off by default — console lines carry personal data more often than spans do. |
 | `debug` | Log what the SDK is doing. |
 
@@ -73,11 +73,13 @@ Wildcards are refused. `connectTracesTo: ["https://*"]` would attach trace heade
 
 If you already know your CORS policy allows `traceparent`, `skipBackendCheck: true` connects without asking.
 
-## Query strings are dropped
+## Query strings are kept, unless you say otherwise
 
-Every recorded URL — `location.href`, the URL of each fetch — has its query string and fragment removed before the span leaves the browser, leaving `https://app.acme.com/reset?<scrubbed>`. The path is the signal; the query string is where password-reset tokens, invite codes and email addresses live, and telemetry storage is permanent.
+URLs are recorded as they are. `scrubQueryStrings: true` drops the query string and the fragment from every recorded URL before the span leaves the browser, leaving `https://app.acme.com/reset?<scrubbed>`.
 
-`keepQueryStrings: true` turns it off if you know your URLs are clean. There is no partial mode: an allowlist of "safe" parameters is a list somebody forgets to update.
+It is off by default because the query and the fragment are usually the only place a URL says *which thing*: `?workflow=42`, or a hash route like `#/workflows/42/runs/abc`, where the fragment is the entire route. Scrubbed, "which workflow was the user on when this broke" stops having an answer — and that question is most of the reason to read browser telemetry at all.
+
+Turn it on when your URLs carry secrets rather than identifiers: password-reset tokens, magic-link codes, invite codes, email addresses. Telemetry storage is permanent, so that risk is real — it is just fixable at the source, in a way that a route you never recorded is not. There is no partial mode: an allowlist of "safe" parameters is a list somebody forgets to update.
 
 ## It will not break your page
 
