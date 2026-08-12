@@ -1,0 +1,37 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Read-only by default. Nothing in this workflow needs to write anything, and a
+# job that cannot write cannot be turned into a supply-chain foothold.
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      # Actions are pinned by commit sha, not by tag: a tag can be moved to point
+      # at new code, and an action runs with access to this job's filesystem.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: latest
+
+      # --frozen-lockfile: the lockfile is the reviewed artifact, so CI must fail
+      # rather than silently resolve something new.
+      # --ignore-scripts: no dependency's install hook runs in the job that builds
+      # the bundle we ship to customers' browsers.
+      - run: bun install --frozen-lockfile --ignore-scripts
+
+      - run: bunx biome ci .
+      - run: bun run typecheck
+      - run: bun test
+      - run: bun run build
+
+      # The published tarball is what customers actually get, so look at it here
+      # rather than discovering its contents after a release.
+      - run: npm pack --dry-run

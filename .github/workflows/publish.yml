@@ -1,0 +1,66 @@
+name: publish
+
+# Publishing is deliberately only reachable two ways: a GitHub Release, or a
+# manual run by someone with write access. There is no push trigger — landing a
+# commit on main must never be able to ship a version to customers by itself.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    # The `npm` environment carries the required-reviewer rule. Even someone who
+    # can push to main cannot publish without a second pair of eyes clicking
+    # approve, and the OIDC identity below is scoped to this environment.
+    environment: npm
+
+    permissions:
+      contents: read
+      # Mints the short-lived OIDC token npm exchanges for publish rights and
+      # stamps into the provenance attestation. No long-lived npm token exists.
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: latest
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      # Trusted publishing needs a recent npm; the one bundled with the runner's
+      # node may predate it.
+      - run: npm install -g npm@latest
+
+      - run: bun install --frozen-lockfile --ignore-scripts
+
+      # Republish the full gate here rather than trusting that CI passed on some
+      # earlier commit: this is the exact tree that becomes the tarball.
+      - run: bunx biome ci .
+      - run: bun run typecheck
+      - run: bun test
+      - run: bun run build
+
+      # A release tag that disagrees with package.json ships a version nobody
+      # can find. Fail before publishing, not after.
+      - name: tag matches package.json version
+        if: github.event_name == 'release'
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg=$(node -p 'require("./package.json").version')
+          if [ "$tag" != "$pkg" ]; then
+            echo "tag $tag != package.json $pkg" >&2
+            exit 1
+          fi
+
+      # No --access/--provenance flags: both come from publishConfig, so the
+      # local `npm publish` a human might run behaves identically.
+      - run: npm publish

@@ -1,0 +1,203 @@
+import { describe, expect, test } from "bun:test";
+import { RumConfigError, resolveOptions } from "./options.js";
+
+const valid = {
+	ingestUrl: "https://acme.logger.onepatch.dev",
+	ingestToken: "op_aBcDeFgHiJkLmNoPqRsTuVwXyZ012345",
+	appName: "acme-web",
+	appVersion: "9f1c0aa",
+};
+
+describe("ingestUrl", () => {
+	test("becomes the OTLP traces endpoint", () => {
+		expect(resolveOptions(valid).tracesUrl).toBe("https://acme.logger.onepatch.dev/v1/traces");
+	});
+
+	// The agent copies this value out of a settings page or a chat message, so
+	// every plausible shape of the same URL has to land in the same place.
+	test.each([
+		"https://acme.logger.onepatch.dev",
+		"https://acme.logger.onepatch.dev/",
+		"https://acme.logger.onepatch.dev///",
+		"https://acme.logger.onepatch.dev/v1/traces",
+		"https://acme.logger.onepatch.dev/v1/traces/",
+		"  https://acme.logger.onepatch.dev  ",
+	])("%s normalises to one endpoint", (ingestUrl) => {
+		expect(resolveOptions({ ...valid, ingestUrl }).tracesUrl).toBe(
+			"https://acme.logger.onepatch.dev/v1/traces",
+		);
+	});
+
+	test("a path prefix survives normalisation", () => {
+		expect(resolveOptions({ ...valid, ingestUrl: "https://acme.dev/otel" }).tracesUrl).toBe(
+			"https://acme.dev/otel/v1/traces",
+		);
+	});
+
+	test("http on localhost is allowed, for local development", () => {
+		const resolved = resolveOptions({ ...valid, ingestUrl: "http://localhost:4318" });
+		expect(resolved.tracesUrl).toBe("http://localhost:4318/v1/traces");
+		expect(resolved.insecureIngest).toBe(true);
+	});
+
+	test("http to a remote host is refused", () => {
+		expect(() =>
+			resolveOptions({ ...valid, ingestUrl: "http://acme.logger.onepatch.dev" }),
+		).toThrow(RumConfigError);
+	});
+
+	test.each([undefined, "", "   ", "not-a-url", "ftp://acme.dev"])("%p is refused", (ingestUrl) => {
+		expect(() => resolveOptions({ ...valid, ingestUrl: ingestUrl as string })).toThrow(
+			RumConfigError,
+		);
+	});
+});
+
+describe("ingestToken", () => {
+	test("a well-formed op_ token is accepted", () => {
+		expect(resolveOptions(valid).ingestToken).toBe(valid.ingestToken);
+	});
+
+	// The shape check earns its keep by refusing anything that ISN'T the
+	// write-only ingest token — the one credential that belongs in a bundle.
+	test.each([
+		"",
+		"op_short",
+		"sk-ant-api03-abcdefghijklmnopqrstuvwxyz",
+		"Bearer op_abc",
+		undefined,
+	])("%p is refused", (ingestToken) => {
+		expect(() => resolveOptions({ ...valid, ingestToken: ingestToken as string })).toThrow(
+			RumConfigError,
+		);
+	});
+});
+
+describe("appName", () => {
+	test("is required", () => {
+		expect(() => resolveOptions({ ...valid, appName: "" })).toThrow(RumConfigError);
+	});
+
+	test("is capped, because it becomes service.name", () => {
+		expect(() => resolveOptions({ ...valid, appName: "a".repeat(65) })).toThrow(RumConfigError);
+	});
+});
+
+describe("connectTracesTo", () => {
+	test("defaults to nothing, so nothing can break", () => {
+		expect(resolveOptions(valid).crossOriginBackends).toEqual([]);
+		expect(resolveOptions(valid).checkBackends).toBe(true);
+	});
+
+	test("URLs reduce to origins", () => {
+		expect(
+			resolveOptions({
+				...valid,
+				connectTracesTo: ["https://api.acme.com/v2/things?x=1"],
+			}).crossOriginBackends,
+		).toEqual(["https://api.acme.com"]);
+	});
+
+	test("duplicates collapse", () => {
+		expect(
+			resolveOptions({
+				...valid,
+				connectTracesTo: ["https://api.acme.com", "https://api.acme.com/other"],
+			}).crossOriginBackends,
+		).toEqual(["https://api.acme.com"]);
+	});
+
+	test("the page's own origin is dropped — it propagates anyway", () => {
+		expect(
+			resolveOptions(
+				{ ...valid, connectTracesTo: ["https://app.acme.com", "https://api.acme.com"] },
+				"https://app.acme.com",
+			).crossOriginBackends,
+		).toEqual(["https://api.acme.com"]);
+	});
+
+	// This is the assertion that matters most in the file. A wildcard here would
+	// attach traceparent to every third-party request the page makes, and any one
+	// of those backends refusing the header cancels a real request.
+	test.each([["*"], ["https://*"], ["https://*.acme.com"], ["*.acme.com"]])(
+		"%s is refused as a wildcard",
+		(entry) => {
+			expect(() => resolveOptions({ ...valid, connectTracesTo: [entry] })).toThrow(/wildcard/);
+		},
+	);
+
+	test("a regular expression is refused — origins must be explicit", () => {
+		expect(() =>
+			resolveOptions({ ...valid, connectTracesTo: [/api\.acme\.com/ as unknown as string] }),
+		).toThrow(RumConfigError);
+	});
+
+	test.each(["api.acme.com", "", "ws://api.acme.com"])("%p is refused", (entry) => {
+		expect(() => resolveOptions({ ...valid, connectTracesTo: [entry] })).toThrow(RumConfigError);
+	});
+
+	test("skipBackendCheck opts out of the startup check", () => {
+		expect(resolveOptions({ ...valid, skipBackendCheck: true }).checkBackends).toBe(false);
+	});
+});
+
+describe("defaults", () => {
+	test("nothing optional is on", () => {
+		const resolved = resolveOptions(valid);
+		expect(resolved.captureConsole).toBe(false);
+		expect(resolved.debug).toBe(false);
+		expect(resolved.environment).toBeUndefined();
+	});
+
+	test("blank optional strings are treated as absent", () => {
+		const resolved = resolveOptions({ ...valid, environment: "  ", appVersion: "" });
+		expect(resolved.environment).toBeUndefined();
+		expect(resolved.appVersion).toBeUndefined();
+	});
+});
+
+describe("query strings", () => {
+	test("are scrubbed unless the caller opts out", () => {
+		expect(resolveOptions(valid).scrubQueryStrings).toBe(true);
+		expect(resolveOptions({ ...valid, keepQueryStrings: true }).scrubQueryStrings).toBe(false);
+	});
+});
+
+describe("ignoreUrls", () => {
+	// Otherwise the exporter's own POSTs are traced as fetch spans, and delivering
+	// those spans produces more spans. Nobody notices until the bill does.
+	test("always ignores our own ingest origin, first", () => {
+		const [ours] = resolveOptions(valid).ignoreUrls;
+		expect(ours).toBeInstanceOf(RegExp);
+		expect((ours as RegExp).test("https://acme.logger.onepatch.dev/v1/traces")).toBe(true);
+		expect((ours as RegExp).test("https://api.acme.com/v1/traces")).toBe(false);
+	});
+
+	test("the caller's own entries are kept", () => {
+		const resolved = resolveOptions({ ...valid, ignoreUrls: ["https://plausible.io/api/event"] });
+		expect(resolved.ignoreUrls).toHaveLength(2);
+		expect(resolved.ignoreUrls[1]).toBe("https://plausible.io/api/event");
+	});
+});
+
+describe("warnings", () => {
+	test("nothing to say when the build is fully described", () => {
+		expect(resolveOptions({ ...valid, environment: "production" }).warnings).toEqual([]);
+	});
+
+	// Both of these are attribution, not correctness: telemetry with no version and
+	// no environment still arrives, it just can't answer "which deploy?" or "which
+	// env?". So they warn rather than refuse — this library never becomes the
+	// reason a page has no telemetry at all.
+	test("a missing appVersion is a warning, not a refusal", () => {
+		const resolved = resolveOptions({ ...valid, appVersion: "", environment: "production" });
+		expect(resolved.warnings).toHaveLength(1);
+		expect(resolved.warnings[0]).toContain("appVersion");
+	});
+
+	test("a missing environment is a warning, not a refusal", () => {
+		const resolved = resolveOptions(valid);
+		expect(resolved.warnings).toHaveLength(1);
+		expect(resolved.warnings[0]).toContain("environment");
+	});
+});
