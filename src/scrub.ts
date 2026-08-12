@@ -1,17 +1,20 @@
 /**
- * Query strings are where secrets end up.
+ * Optional URL scrubbing — `scrubQueryStrings: true`. **Off by default.**
  *
- * A browser span records the URL it was on or the URL it fetched, verbatim.
- * Real applications put password-reset tokens, magic-link codes, invite codes,
- * email addresses and internal ids in query strings — so shipping URLs
- * unmodified means shipping those into long-term telemetry storage, where they
- * are searchable and, by our own retention promise, permanent.
+ * Query strings are where secrets end up: real applications put password-reset
+ * tokens, magic-link codes, invite codes and email addresses in them, and
+ * telemetry storage is permanent. So this exists.
  *
- * The path is kept because the path is the signal (which page, which route). The
- * query and the fragment are dropped, with the fact that something was dropped
- * recorded rather than silently erased, so nobody debugging a route mismatch is
- * left wondering whether a URL ever had parameters. Opt back in per-app with
- * `keepQueryStrings: true` when the team knows their URLs are clean.
+ * But it was the default once and that was wrong. The query and the fragment are
+ * usually the only place the URL says *which thing* — `?workflow=42`, or a hash
+ * route like `#/workflows/42/runs/abc`, where the fragment IS the route. With it
+ * on, "which workflow was the user on when this broke" has no answer, and that
+ * question is most of the value of browser telemetry. Secrets in URLs are worth
+ * fixing at the source; a route you never recorded is not recoverable at all.
+ *
+ * When it is on: the path survives, the query and the fragment are dropped, and
+ * the fact that something was dropped is recorded rather than silently erased, so
+ * nobody debugging a route mismatch wonders whether a URL ever had parameters.
  */
 
 /** Attribute keys whose values are URLs, as emitted by the browser instrumentations. */

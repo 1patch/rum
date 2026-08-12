@@ -102,23 +102,21 @@ export async function startRum(options: RumOptions): Promise<RumStatus> {
 			url: resolved.tracesUrl,
 			apiKey: resolved.ingestToken,
 			applicationName: resolved.appName,
-			deploymentEnvironment: resolved.environment,
-			version: resolved.appVersion,
 			allowInsecureUrl: resolved.insecureIngest,
 			debug: resolved.debug,
 			ignoreUrls: resolved.ignoreUrls,
-			// The two options above only reach SPAN attributes, under names the
-			// semantic conventions have moved on from: `deploymentEnvironment`
-			// becomes the pre-1.27 `deployment.environment`, and `version` becomes
-			// `app.version`. Environment and version describe the thing emitting, not
-			// one span, so they are RESOURCE attributes and that is where a backend
-			// filters on them. Set only on the span, they are invisible to an
-			// env-filtered query, and "which deploy?" cannot be grouped the way it is
-			// for the server half of the same trace.
+			// Environment and version are passed ONLY as resource attributes, and the
+			// SDK's own `deploymentEnvironment` / `version` options are deliberately
+			// not used. Those options reach SPAN attributes under three names the
+			// semantic conventions have moved on from — `environment`,
+			// `deployment.environment` and `app.version` — so setting them alongside
+			// the resource attributes stamped the same two facts three extra times per
+			// span, in places no query looks. Environment and version describe the
+			// thing emitting, not one span; the resource is where a backend filters on
+			// them, and where the server half of the same trace carries them.
 			resourceAttributes: resourceAttributes(resolved),
-			// Strips query strings from every URL-shaped attribute on the way out.
-			// See ./exporter.ts for why this has to happen at the exporter and not
-			// through the SDK's own remapping hook.
+			// Opt-in only (`scrubQueryStrings`). See ./exporter.ts for why this has to
+			// happen at the exporter rather than through the SDK's own remapping hook.
 			exporter: exporterOption({
 				scrubQueryStrings: resolved.scrubQueryStrings,
 				onScrub: resolved.debug

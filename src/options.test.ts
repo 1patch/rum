@@ -157,9 +157,11 @@ describe("defaults", () => {
 });
 
 describe("query strings", () => {
-	test("are scrubbed unless the caller opts out", () => {
-		expect(resolveOptions(valid).scrubQueryStrings).toBe(true);
-		expect(resolveOptions({ ...valid, keepQueryStrings: true }).scrubQueryStrings).toBe(false);
+	// Off by default: the query and the fragment are usually the only place a URL
+	// says which workflow / which run, and losing that costs more than it saves.
+	test("are kept unless the caller opts in", () => {
+		expect(resolveOptions(valid).scrubQueryStrings).toBe(false);
+		expect(resolveOptions({ ...valid, scrubQueryStrings: true }).scrubQueryStrings).toBe(true);
 	});
 });
 
