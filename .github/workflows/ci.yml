@@ -25,7 +25,17 @@ jobs:
       # rather than silently resolve something new.
       # --ignore-scripts: no dependency's install hook runs in the job that builds
       # the bundle we ship to customers' browsers.
-      - run: bun install --frozen-lockfile --ignore-scripts
+      - if: github.actor != 'dependabot[bot]'
+        run: bun install --frozen-lockfile --ignore-scripts
+
+      # Dependabot edits package.json and cannot write bun.lock, so a frozen
+      # install fails on every bump it opens — which would train us to merge red.
+      # Resolve instead, so the bump still gets a real answer to "does the new
+      # version typecheck, test and build". Whoever takes the bump runs
+      # `bun install` locally and commits the lockfile; the frozen check above
+      # then covers it on the merge commit.
+      - if: github.actor == 'dependabot[bot]'
+        run: bun install --ignore-scripts
 
       - run: bunx biome ci .
       - run: bun run typecheck
