@@ -63,4 +63,8 @@ jobs:
 
       # No --access/--provenance flags: both come from publishConfig, so the
       # local `npm publish` a human might run behaves identically.
+      #
+      # npmjs.com renders the README from the tarball this step uploads, not from
+      # main — so a docs-only change is invisible on the package page until a
+      # version ships. That is a reason to cut a patch release, not a bug.
       - run: npm publish
