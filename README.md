@@ -58,9 +58,7 @@ Joining a browser span to a backend span means attaching a `traceparent` header 
 
 Cross-origin is different. Adding that header turns the request into a preflighted one, and if the backend's `Access-Control-Allow-Headers` does not cover `traceparent`, **the browser refuses to send the request at all**. You lose the API call, not just the correlation. This is why Sentry defaults to same-origin only, and why Datadog's equivalent option ships with no default.
 
-So this library asks first. At startup it sends one deliberately boring request per listed origin, carrying a `traceparent`, and only enables propagation for the origins that accept it. An origin that refuses is left alone and logs a warning naming the fix. The worst case is a missing correlation; it is never a broken request.
-
-That probe is the one bit of traffic you might not expect, so: it is a single `GET` to `/.well-known/onepatch-rum-probe` per origin per page load, with the trace flag off. A 404 is a pass — the only question being asked is whether the preflight cleared.
+So this library asks first. At startup it probes each listed origin with a few throwaway `GET`s to `/.well-known/onepatch-rum-probe` — the one bit of traffic you might not expect — and enables propagation only for the origins that accept the header. An origin that refuses is left alone and logs a warning naming the fix. The worst case is a missing correlation; it is never a broken request. What the probe asks and why it takes more than one request is in [`src/probe.ts`](./src/probe.ts).
 
 `await startRum(...)` returns which origins were connected, which is worth asserting on in a test:
 
