@@ -166,6 +166,23 @@ describe("query strings", () => {
 	});
 });
 
+describe("assetFloorMs", () => {
+	test("defaults to a floor, and 0 keeps every asset span", () => {
+		expect(resolveOptions(valid).assetFloorMs).toBe(100);
+		expect(resolveOptions({ ...valid, assetFloorMs: 0 }).assetFloorMs).toBe(0);
+		expect(resolveOptions({ ...valid, assetFloorMs: 250 }).assetFloorMs).toBe(250);
+	});
+
+	// Refused rather than clamped: a floor read as "record nothing" is exactly
+	// the silence this option exists to prevent.
+	test("a nonsense floor is refused at startup", () => {
+		expect(() => resolveOptions({ ...valid, assetFloorMs: -1 })).toThrow(RumConfigError);
+		expect(() => resolveOptions({ ...valid, assetFloorMs: "fast" as unknown as number })).toThrow(
+			RumConfigError,
+		);
+	});
+});
+
 describe("ignoreUrls", () => {
 	// Otherwise the exporter's own POSTs are traced as fetch spans, and delivering
 	// those spans produces more spans. Nobody notices until the bill does.

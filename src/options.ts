@@ -108,6 +108,18 @@ export type RumOptions = {
 	 */
 	scrubQueryStrings?: boolean;
 	/**
+	 * How slow a page asset — a stylesheet, font or chunk — has to be before its
+	 * span is worth keeping, in milliseconds. Defaults to 100. Set `0` to record
+	 * every one.
+	 *
+	 * A page load emits one span per asset, and on a warm cache they are all the
+	 * same handful of near-instant hits, re-recorded on every visit by every
+	 * visitor. The slow ones are the point: `documentLoad` says the page took
+	 * 1.6s and only the asset span says which font it waited on. An asset that
+	 * failed is always kept, however fast it failed.
+	 */
+	assetFloorMs?: number;
+	/**
 	 * Also forward `console.*` calls. Off by default: console lines carry
 	 * personal data far more often than spans do.
 	 */
@@ -130,6 +142,8 @@ export type ResolvedRumOptions = {
 	/** The caller's list, plus a matcher for our own ingest origin. */
 	ignoreUrls: (string | RegExp)[];
 	scrubQueryStrings: boolean;
+	/** Resolved asset floor in ms; `0` means keep every asset span. */
+	assetFloorMs: number;
 	captureConsole: boolean;
 	debug: boolean;
 	/** True when `tracesUrl` is plain http, which the underlying SDK gates. */
@@ -266,6 +280,24 @@ function resolveBackends(raw: string[] | undefined, pageOrigin: string | undefin
 	return out;
 }
 
+/**
+ * The default is 100ms because that is roughly where an asset stops being a
+ * cache hit and starts being something a person waited on. A nonsense value is
+ * refused rather than clamped: silently recording nothing is the failure mode
+ * this whole option exists to make visible.
+ */
+const DEFAULT_ASSET_FLOOR_MS = 100;
+
+function resolveAssetFloor(raw: number | undefined): number {
+	if (raw === undefined) return DEFAULT_ASSET_FLOOR_MS;
+	if (typeof raw !== "number" || !Number.isFinite(raw) || raw < 0) {
+		throw new RumConfigError(
+			`assetFloorMs must be a number of milliseconds, 0 or greater, got ${JSON.stringify(raw)}. Use 0 to keep every page-asset span.`,
+		);
+	}
+	return raw;
+}
+
 export function resolveOptions(
 	options: RumOptions,
 	pageOrigin?: string | undefined,
@@ -325,6 +357,7 @@ export function resolveOptions(
 			...(options.ignoreUrls ?? []),
 		],
 		scrubQueryStrings: options.scrubQueryStrings === true,
+		assetFloorMs: resolveAssetFloor(options.assetFloorMs),
 		captureConsole: options.captureConsole === true,
 		debug: options.debug === true,
 		insecureIngest: insecure,

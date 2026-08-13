@@ -7,7 +7,12 @@
 import { describe, expect, test } from "bun:test";
 import { buildExporter, exporterOption, scrubOnExport } from "./exporter.js";
 
-type Span = { attributes: Record<string, unknown> };
+type Span = {
+	attributes: Record<string, unknown>;
+	name?: string;
+	duration?: [number, number];
+	status?: { code?: number };
+};
 
 function fakeExporter() {
 	const sent: Span[][] = [];
@@ -204,6 +209,80 @@ describe("the identity gate", () => {
 		await wait;
 		await Promise.resolve();
 		expect(sent[0]?.[0]?.attributes["http.url"]).toBe("https://a.dev/x?<scrubbed>");
+	});
+});
+
+// Seven asset spans per page load, the same seven every load, is most of what a
+// browser emits and almost none of what anyone reads. The floor drops the cache
+// hits and keeps anything a person actually waited on.
+describe("the asset floor", () => {
+	const asset = (ms: number, extra: Partial<Span> = {}): Span =>
+		({
+			name: "resourceFetch",
+			attributes: {},
+			duration: [Math.floor(ms / 1000), (ms % 1000) * 1e6],
+			...extra,
+		}) as Span;
+
+	test("a fast asset is dropped and a slow one is kept", () => {
+		const { exporter, sent } = fakeExporter();
+		scrubOnExport(exporter, { scrubQueryStrings: false, assetFloorMs: 100 });
+
+		exporter.export([asset(12), asset(430)], () => {});
+
+		expect(sent[0]).toHaveLength(1);
+		expect(sent[0]?.[0]?.duration?.[1]).toBe(430e6);
+	});
+
+	test("only assets are ever dropped", () => {
+		const { exporter, sent } = fakeExporter();
+		scrubOnExport(exporter, { scrubQueryStrings: false, assetFloorMs: 100 });
+
+		const click = { name: "click", attributes: {}, duration: [0, 0] } as unknown as Span;
+		exporter.export([click, asset(3)], () => {});
+
+		expect(sent[0]).toEqual([click]);
+	});
+
+	// A failed asset is the whole reason to look at asset spans, and Resource
+	// Timing leaves no status code to find it by afterwards.
+	test("an asset that failed is kept however fast it failed", () => {
+		const { exporter, sent } = fakeExporter();
+		scrubOnExport(exporter, { scrubQueryStrings: false, assetFloorMs: 100 });
+
+		exporter.export([asset(4, { status: { code: 2 } })], () => {});
+
+		expect(sent[0]).toHaveLength(1);
+	});
+
+	test("a batch of nothing but cache hits is not sent at all, and still reports success", () => {
+		const { exporter, sent } = fakeExporter();
+		scrubOnExport(exporter, { scrubQueryStrings: false, assetFloorMs: 100 });
+
+		let result: unknown;
+		exporter.export([asset(2), asset(9)], (r) => {
+			result = r;
+		});
+
+		expect(sent).toHaveLength(0);
+		expect(result).toEqual({ code: 0 });
+	});
+
+	// An unreadable span is not a reason to lose one.
+	test("an asset with no usable duration is kept", () => {
+		const { exporter, sent } = fakeExporter();
+		scrubOnExport(exporter, { scrubQueryStrings: false, assetFloorMs: 100 });
+
+		exporter.export([{ name: "resourceFetch", attributes: {} } as unknown as Span], () => {});
+
+		expect(sent[0]).toHaveLength(1);
+	});
+
+	test("a floor of zero leaves the exporter untouched", () => {
+		const { exporter } = fakeExporter();
+		const original = exporter.export;
+		scrubOnExport(exporter, { scrubQueryStrings: false, assetFloorMs: 0 });
+		expect(exporter.export).toBe(original);
 	});
 });
 

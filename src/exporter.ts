@@ -47,7 +47,27 @@ export type ScrubOptions = {
 	 * person's attributes, and the older stamp must not overwrite them.
 	 */
 	identity?: () => Record<string, unknown> | null;
+	/**
+	 * Drop `resourceFetch` spans faster than this, in milliseconds.
+	 *
+	 * A page load emits one of these per stylesheet, font and chunk — seven per
+	 * load on our own app, the same seven every time, forever. The slow ones earn
+	 * their place: `documentLoad` tells you the page took 1.6s, and only the
+	 * asset spans tell you which font it was waiting on. The fast ones are the
+	 * same cache hit re-recorded on every visit by every visitor.
+	 *
+	 * A span whose status is not UNSET is always kept — a failed asset is the
+	 * whole reason to look, and Resource Timing gives no status code to filter on
+	 * afterwards.
+	 */
+	assetFloorMs?: number;
 };
+
+/** `ExportResultCode.SUCCESS`, without a dependency on the SDK's enum. */
+const EXPORT_SUCCESS = { code: 0 };
+
+/** The vendor instrumentation's name for a page asset — a stylesheet, font or chunk. */
+const ASSET_SPAN = "resourceFetch";
 
 /**
  * The SDK's `exporter` option carries a `factory` — it is read at runtime and
@@ -67,8 +87,34 @@ export function exporterOption(options: ScrubOptions): RumOtelWebExporterOptions
  */
 export type ExporterFactoryConfig = { url: string; authHeader?: string };
 
-/** As much of a span as scrubbing needs to see. */
-type SpanWithAttributes = { attributes: Record<string, unknown> };
+/** As much of a span as scrubbing and the asset floor need to see. */
+type SpanWithAttributes = {
+	attributes: Record<string, unknown>;
+	name?: string;
+	/** OpenTelemetry's `HrTime`: `[seconds, nanoseconds]`. */
+	duration?: [number, number];
+	status?: { code?: number };
+};
+
+/**
+ * Whether this span is a page asset fast enough to be worth nothing. Anything
+ * that isn't recognisably a timed, successful `resourceFetch` is kept — an
+ * unreadable span is not a reason to lose one.
+ */
+function isQuietAsset(span: SpanWithAttributes | null | undefined, floorMs: number): boolean {
+	if (span === null || span === undefined) return false;
+	if (span.name !== ASSET_SPAN) return false;
+	// UNSET is 0. Anything else means the asset failed, which is the case the
+	// floor exists to preserve.
+	if (span.status !== undefined && span.status !== null && (span.status.code ?? 0) !== 0) {
+		return false;
+	}
+	const duration = span.duration;
+	if (!Array.isArray(duration) || duration.length !== 2) return false;
+	const ms = duration[0] * 1000 + duration[1] / 1e6;
+	if (!Number.isFinite(ms)) return false;
+	return ms < floorMs;
+}
 
 type ExportCallback = (result: unknown) => void;
 
@@ -96,10 +142,12 @@ export function buildExporter(
  * Separate from `buildExporter` so it can be tested without a live exporter.
  */
 export function scrubOnExport<E>(exporter: E, options: ScrubOptions): E {
+	const floorMs = options.assetFloorMs ?? 0;
 	if (
 		!options.scrubQueryStrings &&
 		options.waitFor === undefined &&
-		options.identity === undefined
+		options.identity === undefined &&
+		floorMs <= 0
 	) {
 		return exporter;
 	}
@@ -118,8 +166,14 @@ export function scrubOnExport<E>(exporter: E, options: ScrubOptions): E {
 		};
 		void gate.then(openIt, openIt);
 	}
-	patchable.export = (spans, resultCallback) => {
+	patchable.export = (batch, resultCallback) => {
 		const deliver = () => {
+			const spans = floorMs > 0 ? batch.filter((span) => !isQuietAsset(span, floorMs)) : batch;
+			// A batch of nothing but cache hits is a POST worth not making.
+			if (spans.length === 0 && batch.length > 0) {
+				resultCallback(EXPORT_SUCCESS);
+				return;
+			}
 			const identity = options.identity?.() ?? null;
 			if (identity !== null) {
 				for (const span of spans) {
