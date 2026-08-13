@@ -186,6 +186,7 @@ export async function startRum(options: RumOptions): Promise<RumStatus> {
 					: undefined,
 				waitFor: gate.wait,
 				identity: () => stamped,
+				assetFloorMs: resolved.assetFloorMs,
 			}),
 			// Every switch is set explicitly, including the ones being turned
 			// off, so that a version bump of the underlying SDK cannot quietly

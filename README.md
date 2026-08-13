@@ -46,6 +46,7 @@ There is no session replay. No DOM is captured, no keystrokes, no form contents.
 | `skipBackendCheck` | Skip the startup check on those origins. Read the next section first. |
 | `ignoreUrls` | Extra URLs to leave untraced. Your ingest origin is always on this list. |
 | `scrubQueryStrings` | Drop query strings and fragments from recorded URLs. Off by default — see below. |
+| `assetFloorMs` | How slow a page asset has to be before its span is kept. Defaults to `100`; `0` records every one. See below. |
 | `captureConsole` | Also forward `console.*`. Off by default — console lines carry personal data more often than spans do. |
 | `debug` | Log what the SDK is doing. |
 
@@ -115,6 +116,14 @@ URLs are recorded as they are. `scrubQueryStrings: true` drops the query string 
 It is off by default because the query and the fragment are usually the only place a URL says *which thing*: `?workflow=42`, or a hash route like `#/workflows/42/runs/abc`, where the fragment is the entire route. Scrubbed, "which workflow was the user on when this broke" stops having an answer — and that question is most of the reason to read browser telemetry at all.
 
 Turn it on when your URLs carry secrets rather than identifiers: password-reset tokens, magic-link codes, invite codes, email addresses. Telemetry storage is permanent, so that risk is real — it is just fixable at the source, in a way that a route you never recorded is not. There is no partial mode: an allowlist of "safe" parameters is a list somebody forgets to update.
+
+## Fast page assets are not recorded
+
+A page load emits one span per stylesheet, font and chunk. On our own app that is seven of every eleven page-load spans, and on a warm cache they are the same seven near-instant hits recorded again on every visit by every visitor.
+
+So an asset span is kept when it took `assetFloorMs` or longer — 100ms by default — and dropped when it was faster. `documentLoad` still tells you the page took 1.6 seconds; the asset spans are there to tell you which font it waited on, and a 3ms cache hit never answers that. An asset that *failed* is always kept, however fast it failed, because that is the case worth looking at and Resource Timing leaves no status code to find it by later.
+
+`assetFloorMs: 0` records every one. Raise it if your visitors are mostly on fast connections and you only care about the tail.
 
 ## It will not break your page
 
