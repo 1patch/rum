@@ -22,6 +22,27 @@ export type RumUser = {
 };
 
 /**
+ * Called once at startup, and awaited: return who the person is as soon as your
+ * app knows. `null` means "nobody is signed in right now" — a login page, a
+ * cold load before the session request lands — which is honest, and which
+ * `identifyUser` fixes the moment it changes.
+ */
+export type RumUserResolver = () => RumUser | null | Promise<RumUser | null>;
+
+/**
+ * Identity is a REQUIRED startup option, in one of three shapes: the person, a
+ * resolver for the person, or the literal `"anonymous"`.
+ *
+ * It is required because the alternative — an optional field and a second
+ * `identifyUser` call to remember — is exactly what we shipped on our own app,
+ * and our own browser spans went a week with no one attached to them. Telemetry
+ * that can't answer "what did this person just do" is missing the R and the U in
+ * RUM. `"anonymous"` is a real answer for a site with no login; it just has to be
+ * one somebody typed on purpose.
+ */
+export type RumIdentity = RumUser | RumUserResolver | "anonymous";
+
+/**
  * Friendly key in, OpenTelemetry-conventional attribute out. The conventional
  * names are what queries and dashboards are written against, so they are not
  * negotiable per-customer; the friendly names exist so nobody has to remember

@@ -8,6 +8,7 @@
  */
 
 import { originMatcher, PROBE_PATH } from "./probe.js";
+import type { RumIdentity, RumUser, RumUserResolver } from "./user.js";
 
 /**
  * Our own CORS probes, on any origin. The probe goes to the caller's backend —
@@ -54,6 +55,19 @@ export type RumOptions = {
 	 * question "which deploy?", and that is the question anyone actually asks.
 	 */
 	appVersion: string;
+	/**
+	 * Who is using the app. Required — see `RumIdentity`. One of:
+	 *
+	 * - the person: `user: { id: session.userId, email: session.email }`
+	 * - a resolver, called once and awaited, for when the session lands after
+	 *   this call: `user: async () => (await me())?.user ?? null`
+	 * - `user: "anonymous"`, if this app genuinely has no signed-in user
+	 *
+	 * Pass it here even if you also call `identifyUser` later; a resolver that
+	 * returns `null` on a cold load is the normal shape, and `identifyUser`
+	 * updates it.
+	 */
+	user: RumIdentity;
 	/**
 	 * Cross-origin backends whose traces should join the browser's, as bare
 	 * origins: `["https://api.acme.com"]`.
@@ -108,6 +122,8 @@ export type ResolvedRumOptions = {
 	appName: string;
 	environment: string | undefined;
 	appVersion: string | undefined;
+	/** The person, a resolver for them, or `null` for a deliberate `"anonymous"`. */
+	user: RumUser | RumUserResolver | null;
 	/** Normalised, de-duplicated, same-origin entries removed. */
 	crossOriginBackends: string[];
 	checkBackends: boolean;
@@ -137,6 +153,38 @@ function required(value: unknown, option: string): string {
 		throw new RumConfigError(`${option} is required and must be a non-empty string.`);
 	}
 	return value.trim();
+}
+
+/**
+ * The `user` option, checked at startup like everything else that can be got
+ * wrong — and unlike the rest, refused rather than warned about, because a
+ * warning is what an optional identity already amounted to.
+ *
+ * The empty-object case is the one worth being strict about: `user: {}` type-checks
+ * (every field of `RumUser` is optional, so that the shape stays open) and would
+ * otherwise sail through as "identity handled".
+ */
+function resolveIdentity(raw: unknown): RumUser | RumUserResolver | null {
+	if (raw === "anonymous") return null;
+	if (typeof raw === "function") return raw as RumUserResolver;
+	if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) {
+		const user = raw as RumUser;
+		const named = Object.entries(user).some(([, value]) => value !== undefined);
+		if (!named) {
+			throw new RumConfigError(
+				'user was passed an empty object, which stamps nothing. Pass at least one identifying field — `{ id: "…" }` is enough — or `user: "anonymous"` if this app has no signed-in user.',
+			);
+		}
+		if (user.id === undefined && user.email === undefined) {
+			throw new RumConfigError(
+				'user needs an `id` or an `email` to be worth anything: without one, sessions cannot be tied to a person. Add one, or pass `user: "anonymous"`.',
+			);
+		}
+		return user;
+	}
+	throw new RumConfigError(
+		'user is required. Pass the person (`{ id, email }`), a resolver called once at startup (`() => session?.user ?? null`), or `user: "anonymous"` if this app has no signed-in user. Browser telemetry with nobody attached to it cannot answer the question it exists for.',
+	);
 }
 
 /**
@@ -259,6 +307,7 @@ export function resolveOptions(
 		appName,
 		environment,
 		appVersion,
+		user: resolveIdentity(options.user),
 		crossOriginBackends: resolveBackends(options.connectTracesTo, pageOrigin),
 		checkBackends: options.skipBackendCheck !== true,
 		// Prepended, not appended: the SDK walks this list in order, and the entries

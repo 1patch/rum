@@ -31,13 +31,19 @@ import { type RumAttributes, type RumUser, userAttributes } from "./user.js";
 export type { RumOptions } from "./options.js";
 export { RumConfigError } from "./options.js";
 export type { BackendCheck } from "./probe.js";
-export type { RumAttributes, RumUser } from "./user.js";
+export type { RumAttributes, RumIdentity, RumUser, RumUserResolver } from "./user.js";
 
 const PREFIX = "[onepatch/rum]";
 
 export type RumStatus = {
 	/** True when telemetry is flowing. */
 	started: boolean;
+	/**
+	 * True when a person is attached to these spans. False when you passed
+	 * `user: "anonymous"`, or your resolver returned `null` because nobody was
+	 * signed in yet — assert on it in the test that covers your logged-in path.
+	 */
+	identified: boolean;
 	/** Present only when something was wrong. Worth asserting on in a test. */
 	error?: string;
 	/** One entry per cross-origin backend in `connectTracesTo`. */
@@ -74,6 +80,7 @@ export async function startRum(options: RumOptions): Promise<RumStatus> {
 	if (typeof window === "undefined") {
 		return {
 			started: false,
+			identified: false,
 			error: "not a browser environment; startRum() did nothing",
 			backends: [],
 		};
@@ -81,7 +88,12 @@ export async function startRum(options: RumOptions): Promise<RumStatus> {
 
 	if (started !== undefined) {
 		warn("startRum() was called twice. The second call was ignored.");
-		return { started: true, error: "startRum() was already called", backends: [] };
+		return {
+			started: true,
+			identified: false,
+			error: "startRum() was already called",
+			backends: [],
+		};
 	}
 
 	let resolved: ResolvedRumOptions;
@@ -90,7 +102,7 @@ export async function startRum(options: RumOptions): Promise<RumStatus> {
 	} catch (error) {
 		const message = error instanceof RumConfigError ? error.message : String(error);
 		console.error(`${PREFIX} not started. ${message}`);
-		return { started: false, error: message, backends: [] };
+		return { started: false, identified: false, error: message, backends: [] };
 	}
 
 	for (const message of resolved.warnings) warn(message);
@@ -145,15 +157,48 @@ export async function startRum(options: RumOptions): Promise<RumStatus> {
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		console.error(`${PREFIX} not started. ${message}`);
-		return { started: false, error: message, backends: [] };
+		return { started: false, identified: false, error: message, backends: [] };
 	}
 
 	publishSessionId();
 
 	started = { options: resolved, propagateTo };
 
-	const backends = await connectBackends(resolved, propagateTo);
-	return { started: true, backends };
+	// Identity and the backend checks are independent, and both are already
+	// running behind live telemetry: spans buffered in this window get the stamp
+	// too, because `setGlobalAttributes` applies to everything not yet sent.
+	const [backends, identified] = await Promise.all([
+		connectBackends(resolved, propagateTo),
+		applyIdentity(resolved.user),
+	]);
+	return { started: true, identified, backends };
+}
+
+/**
+ * Stamp the identity the caller was required to supply.
+ *
+ * A resolver that throws is reported and otherwise survived — the caller's auth
+ * code failing is not a reason for this library to stop collecting, and it is the
+ * one shape here that runs someone else's code.
+ */
+async function applyIdentity(user: ResolvedRumOptions["user"]): Promise<boolean> {
+	if (user === null) return false;
+	if (typeof user !== "function") {
+		Rum.setGlobalAttributes(userAttributes(user));
+		return true;
+	}
+	let resolvedUser: RumUser | null;
+	try {
+		resolvedUser = await user();
+	} catch (error) {
+		warn(
+			`the \`user\` resolver threw, so these spans have nobody attached: ${error instanceof Error ? error.message : String(error)}. Call identifyUser() once your session resolves.`,
+		);
+		return false;
+	}
+	if (resolvedUser === null || resolvedUser === undefined) return false;
+	Rum.setGlobalAttributes(userAttributes(resolvedUser));
+	return true;
 }
 
 /** The resource attributes the SDK won't set itself, and everything else reads. */
@@ -236,9 +281,13 @@ async function connectBackends(
 }
 
 /**
- * Stamp identity onto every span from here on, including spans already buffered
- * but not yet sent. Call it as soon as you know who the person is, and again
- * whenever that changes; the last call wins per key.
+ * Update who the person is: a sign-in, an org switch, a profile edit. Applies to
+ * every span from here on, including ones already buffered but not yet sent; the
+ * last call wins per key.
+ *
+ * The FIRST identity does not belong here — it is the required `user` option on
+ * `startRum`, so that no app can be wired without someone deciding what identity
+ * means for it. This is the update path.
  */
 export function identifyUser(user: RumUser): void {
 	if (started === undefined) {
