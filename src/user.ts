@@ -8,17 +8,33 @@ export type RumAttributeValue = string | number | boolean;
 
 export type RumAttributes = Record<string, RumAttributeValue>;
 
+/**
+ * A `RumUser` field. `null` clears a key that was set earlier; leaving it out
+ * means "don't touch it".
+ *
+ * That distinction is load-bearing on an update: `identifyUser({ id })` after a
+ * workspace switch leaves the OLD `org.id` on every subsequent span, because an
+ * absent key is not a removal. Pass `null` for what no longer applies. The first
+ * caller to hit this wrote `orgId: ""` — correct behaviour, discovered by
+ * reading our source, which is one reader further than anybody should have to go.
+ */
+export type RumAttributeUpdate = RumAttributeValue | null;
+
 export type RumUser = {
 	/** Your own stable identifier for the person. */
-	id?: string;
-	email?: string;
-	/** Display name. */
-	name?: string;
+	id?: RumAttributeUpdate;
+	email?: RumAttributeUpdate;
+	/**
+	 * Display name. Worth passing: an id is unreadable in a list of traces, and
+	 * matching one back to a person is the first step of every lookup.
+	 */
+	name?: RumAttributeUpdate;
 	/** The account, workspace, or tenant they are acting in. */
-	orgId?: string;
-	orgName?: string;
+	orgId?: RumAttributeUpdate;
+	/** Its name, for the same reason `name` is worth passing. */
+	orgName?: RumAttributeUpdate;
 	/** Anything else worth filtering sessions by, e.g. `plan: "enterprise"`. */
-	[key: string]: RumAttributeValue | undefined;
+	[key: string]: RumAttributeUpdate | undefined;
 };
 
 /**

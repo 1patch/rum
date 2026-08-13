@@ -44,7 +44,7 @@ describe("scrubOnExport", () => {
 		expect(result).toEqual({ code: 0 });
 	});
 
-	test("opting out leaves the exporter untouched", () => {
+	test("opting out of both scrubbing and the gate leaves the exporter untouched", () => {
 		const { exporter, sent } = fakeExporter();
 		const original = exporter.export;
 		scrubOnExport(exporter, { scrubQueryStrings: false });
@@ -66,6 +66,89 @@ describe("scrubOnExport", () => {
 		] as unknown as Span[];
 		expect(() => exporter.export(spans, () => {})).not.toThrow();
 		expect(sent[0]?.[2]?.attributes["http.url"]).toBe("https://a.dev/x?<scrubbed>");
+	});
+});
+
+// The identity gate. Every span in the buffer when it opens gets the person
+// stamped on it; a batch that goes out before then is anonymous forever, which is
+// what made the first ~2s of every one of our own sessions unattributable.
+describe("the identity gate", () => {
+	test("the first batch waits, and goes out when the gate opens", async () => {
+		const { exporter, sent } = fakeExporter();
+		let open: (() => void) | undefined;
+		const wait = new Promise<void>((resolve) => {
+			open = resolve;
+		});
+		scrubOnExport(exporter, { scrubQueryStrings: false, waitFor: wait });
+
+		exporter.export([{ attributes: { a: 1 } }], () => {});
+		await Promise.resolve();
+		expect(sent).toHaveLength(0);
+
+		open?.();
+		await wait;
+		await Promise.resolve();
+		expect(sent).toHaveLength(1);
+	});
+
+	// A second batch cutting ahead of a held first one would be the same bug on a
+	// slower connection, so everything before the gate opens waits, in order.
+	test("every batch before the gate waits, and keeps its order", async () => {
+		const { exporter, sent } = fakeExporter();
+		let open: (() => void) | undefined;
+		const wait = new Promise<void>((resolve) => {
+			open = resolve;
+		});
+		scrubOnExport(exporter, { scrubQueryStrings: false, waitFor: wait });
+
+		exporter.export([{ attributes: { n: 1 } }], () => {});
+		exporter.export([{ attributes: { n: 2 } }], () => {});
+		await Promise.resolve();
+		expect(sent).toHaveLength(0);
+
+		open?.();
+		await wait;
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(sent.map((batch) => batch[0]?.attributes.n)).toEqual([1, 2]);
+	});
+
+	test("batches after the gate opens are not delayed at all", async () => {
+		const { exporter, sent } = fakeExporter();
+		const wait = Promise.resolve();
+		scrubOnExport(exporter, { scrubQueryStrings: false, waitFor: wait });
+		await wait;
+		await Promise.resolve();
+
+		exporter.export([{ attributes: { a: 1 } }], () => {});
+		expect(sent).toHaveLength(1);
+	});
+
+	// Telemetry is never what gets dropped: a gate that rejects still delivers.
+	test("a rejected gate delivers the batch anyway", async () => {
+		const { exporter, sent } = fakeExporter();
+		const wait = Promise.reject(new Error("resolver blew up"));
+		scrubOnExport(exporter, { scrubQueryStrings: false, waitFor: wait });
+
+		exporter.export([{ attributes: { a: 1 } }], () => {});
+		await wait.catch(() => {});
+		await Promise.resolve();
+		expect(sent).toHaveLength(1);
+	});
+
+	test("held spans are still scrubbed on the way out", async () => {
+		const { exporter, sent } = fakeExporter();
+		let open: (() => void) | undefined;
+		const wait = new Promise<void>((resolve) => {
+			open = resolve;
+		});
+		scrubOnExport(exporter, { scrubQueryStrings: true, waitFor: wait });
+
+		exporter.export([{ attributes: { "http.url": "https://a.dev/x?t=1" } }], () => {});
+		open?.();
+		await wait;
+		await Promise.resolve();
+		expect(sent[0]?.[0]?.attributes["http.url"]).toBe("https://a.dev/x?<scrubbed>");
 	});
 });
 

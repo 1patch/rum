@@ -72,9 +72,22 @@ const status = await startRum({ …, user: () => session?.user ?? null });
 status.identified;  // false when nobody was attached
 ```
 
-Then call `identifyUser` whenever identity changes: a sign-in, an org switch. It applies to spans already buffered but not yet sent, so the stamp is not just prospective.
+Pass names, not only ids: `user.id` and `org.id` are unreadable in a list of traces, and turning one back into a person or a customer is the first step of every lookup.
 
-We learned this the hard way on our own app: identity was a second call, the second call was never written, and a week of our own browser spans had nobody on them. An option you can forget is a bug you ship.
+The first batch of spans waits up to three seconds for identity, so the page-load spans — which exist before any session request can have answered — carry the person too. The wait ends the moment identity settles, and also the moment the page starts to go away, so it never costs you telemetry.
+
+### Updating it
+
+Call `identifyUser` whenever identity changes: a sign-in, a workspace switch. It applies to spans already buffered but not yet sent, so the stamp is not just prospective.
+
+Pass `null` for anything that no longer applies, because an absent key means "leave it as it was":
+
+```ts
+identifyUser({ id: user.id, orgId: null, orgName: null });  // left the workspace
+identifyUser({ id: user.id });                              // still tagged with the old org
+```
+
+We learned the required-option part the hard way on our own app: identity was a second call, the second call was never written, and a week of our own browser spans had nobody on them. An option you can forget is a bug you ship.
 
 ## connectTracesTo, and why it is opt-in per origin
 

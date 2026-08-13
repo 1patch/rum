@@ -175,7 +175,12 @@ function resolveIdentity(raw: unknown): RumUser | RumUserResolver | null {
 				'user was passed an empty object, which stamps nothing. Pass at least one identifying field — `{ id: "…" }` is enough — or `user: "anonymous"` if this app has no signed-in user.',
 			);
 		}
-		if (user.id === undefined && user.email === undefined) {
+		// `null` and `""` mean "clear this key", which is meaningful on an
+		// `identifyUser` update and meaningless at startup — there is nothing to
+		// clear yet. So an id of `null` is as unidentified as no id at all.
+		const identifies = (value: unknown): boolean =>
+			typeof value === "string" ? value.trim() !== "" : value !== null && value !== undefined;
+		if (!identifies(user.id) && !identifies(user.email)) {
 			throw new RumConfigError(
 				'user needs an `id` or an `email` to be worth anything: without one, sessions cannot be tied to a person. Add one, or pass `user: "anonymous"`.',
 			);

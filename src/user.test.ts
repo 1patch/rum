@@ -37,8 +37,22 @@ describe("userAttributes", () => {
 		});
 	});
 
+	// No cast needed here any more, and that is the point: `null` was always the
+	// way to clear a key, but the type didn't allow it, so the first person to need
+	// it read our source and wrote `orgId: ""` instead.
 	test("an explicit null clears the attribute", () => {
-		expect(userAttributes({ email: null as unknown as string })).toEqual({ "user.email": "" });
+		expect(userAttributes({ email: null })).toEqual({ "user.email": "" });
+	});
+
+	// The case that makes clearing matter: an absent key leaves the OLD value on
+	// every later span, so a member who leaves a workspace stays tagged with it.
+	test("leaving a workspace clears the org, while omitting it would not", () => {
+		expect(userAttributes({ id: "u_1", orgId: null, orgName: null })).toEqual({
+			"user.id": "u_1",
+			"org.id": "",
+			"org.name": "",
+		});
+		expect(userAttributes({ id: "u_1" })).toEqual({ "user.id": "u_1" });
 	});
 
 	// "[object Object]" in a span attribute is worse than no attribute: it looks

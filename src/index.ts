@@ -35,6 +35,48 @@ export type { RumAttributes, RumIdentity, RumUser, RumUserResolver } from "./use
 
 const PREFIX = "[onepatch/rum]";
 
+/**
+ * How long the first batch of spans will wait for identity before going out
+ * anyway.
+ *
+ * Long enough for a session request on a slow connection, short enough that
+ * telemetry from a page someone bounces off still arrives. The wait also ends
+ * early — the moment identity settles, or the moment the page starts to go
+ * away — so this ceiling is only reached when a resolver hangs.
+ */
+const IDENTITY_GRACE_MS = 3000;
+
+type Gate = { wait: Promise<void>; open: () => void };
+
+function newGate(): Gate {
+	let open: () => void = () => {};
+	const wait = new Promise<void>((resolve) => {
+		open = () => resolve();
+	});
+	return { wait, open };
+}
+
+/**
+ * Release the identity gate when the page starts to go away, so a slow resolver
+ * can never turn a hold into lost telemetry. `pagehide` covers navigation and
+ * the back/forward cache; `visibilitychange` covers a tab-switch on mobile,
+ * which is where a page is most often killed without ever firing `pagehide`.
+ *
+ * Feature-detected rather than assumed: this file is also reached from
+ * server-rendered code paths and from tests with a minimal `window`.
+ */
+function openGateOnPageExit(gate: Gate): void {
+	try {
+		window.addEventListener?.("pagehide", gate.open, { once: true });
+		const doc = globalThis.document;
+		doc?.addEventListener?.("visibilitychange", () => {
+			if (doc.visibilityState === "hidden") gate.open();
+		});
+	} catch {
+		// A gate that only opens on identity or the timer is still correct.
+	}
+}
+
 export type RumStatus = {
 	/** True when telemetry is flowing. */
 	started: boolean;
@@ -109,6 +151,14 @@ export async function startRum(options: RumOptions): Promise<RumStatus> {
 
 	const propagateTo: RegExp[] = [];
 
+	// Built before `init`, because the exporter it gates is built inside it. The
+	// document-load spans exist before any session request can have answered, so
+	// without this hold the head of every session is anonymous no matter how
+	// promptly identity arrives.
+	const gate = newGate();
+	const graceTimer = setTimeout(gate.open, IDENTITY_GRACE_MS);
+	openGateOnPageExit(gate);
+
 	try {
 		Rum.init({
 			url: resolved.tracesUrl,
@@ -134,6 +184,7 @@ export async function startRum(options: RumOptions): Promise<RumStatus> {
 				onScrub: resolved.debug
 					? (count) => console.info(`${PREFIX} scrubbed query strings from ${count} attributes`)
 					: undefined,
+				waitFor: gate.wait,
 			}),
 			// Every switch is set explicitly, including the ones being turned
 			// off, so that a version bump of the underlying SDK cannot quietly
@@ -155,6 +206,9 @@ export async function startRum(options: RumOptions): Promise<RumStatus> {
 			},
 		});
 	} catch (error) {
+		// Nothing is collecting, so nothing is held — but leave no timer behind.
+		clearTimeout(graceTimer);
+		gate.open();
 		const message = error instanceof Error ? error.message : String(error);
 		console.error(`${PREFIX} not started. ${message}`);
 		return { started: false, identified: false, error: message, backends: [] };
@@ -169,7 +223,10 @@ export async function startRum(options: RumOptions): Promise<RumStatus> {
 	// too, because `setGlobalAttributes` applies to everything not yet sent.
 	const [backends, identified] = await Promise.all([
 		connectBackends(resolved, propagateTo),
-		applyIdentity(resolved.user),
+		applyIdentity(resolved.user).finally(() => {
+			clearTimeout(graceTimer);
+			gate.open();
+		}),
 	]);
 	return { started: true, identified, backends };
 }

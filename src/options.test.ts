@@ -255,6 +255,17 @@ describe("user", () => {
 		);
 	});
 
+	// `null` means "clear this key", which is meaningful on an update and empty at
+	// startup — there is nothing to clear yet, so it identifies nobody.
+	test("an id that is null or blank identifies nobody, and is refused", () => {
+		expect(() => resolveOptions({ ...valid, user: { id: null } })).toThrow(
+			/needs an `id` or an `email`/,
+		);
+		expect(() => resolveOptions({ ...valid, user: { id: "   " } })).toThrow(
+			/needs an `id` or an `email`/,
+		);
+	});
+
 	test("null, a string, an array, a number are all refused", () => {
 		for (const bad of [null, "u_1", ["u_1"], 42]) {
 			expect(() => resolveOptions({ ...valid, user: bad as never })).toThrow(RumConfigError);
