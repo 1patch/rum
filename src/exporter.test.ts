@@ -136,6 +136,61 @@ describe("the identity gate", () => {
 		expect(sent).toHaveLength(1);
 	});
 
+	// The bug a staging verification found: holding a batch is not stamping it.
+	// The underlying SDK copies global attributes in `onStart`, so a span that had
+	// already started when identity arrived went out anonymous however long it
+	// waited — which is every span of the first page load.
+	test("a span that started before identity is stamped on the way out", async () => {
+		const { exporter, sent } = fakeExporter();
+		let open: (() => void) | undefined;
+		const wait = new Promise<void>((resolve) => {
+			open = resolve;
+		});
+		let identity: Record<string, unknown> | null = null;
+		scrubOnExport(exporter, {
+			scrubQueryStrings: false,
+			waitFor: wait,
+			identity: () => identity,
+		});
+
+		// Started (and buffered) while nobody was known.
+		exporter.export([{ attributes: { name: "documentLoad" } }], () => {});
+		identity = { "user.id": "u_1", "user.email": "zoe@acme.com" };
+		open?.();
+		await wait;
+		await Promise.resolve();
+
+		expect(sent[0]?.[0]?.attributes).toEqual({
+			name: "documentLoad",
+			"user.id": "u_1",
+			"user.email": "zoe@acme.com",
+		});
+	});
+
+	// A span that started after a workspace switch already carries the new org,
+	// and the batch may still hold spans from before it. Filling only what is
+	// missing keeps each span with the identity it was created under.
+	test("a span that already has an attribute keeps its own value", async () => {
+		const { exporter, sent } = fakeExporter();
+		scrubOnExport(exporter, {
+			scrubQueryStrings: false,
+			identity: () => ({ "user.id": "u_1", "org.id": "org_new" }),
+		});
+
+		exporter.export([{ attributes: { "org.id": "org_old" } }], () => {});
+
+		expect(sent[0]?.[0]?.attributes).toEqual({ "org.id": "org_old", "user.id": "u_1" });
+	});
+
+	test("nobody identified leaves the spans exactly as they were", async () => {
+		const { exporter, sent } = fakeExporter();
+		scrubOnExport(exporter, { scrubQueryStrings: false, identity: () => null });
+
+		exporter.export([{ attributes: { a: 1 } }], () => {});
+
+		expect(sent[0]?.[0]?.attributes).toEqual({ a: 1 });
+	});
+
 	test("held spans are still scrubbed on the way out", async () => {
 		const { exporter, sent } = fakeExporter();
 		let open: (() => void) | undefined;

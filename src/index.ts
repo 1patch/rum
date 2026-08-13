@@ -185,6 +185,7 @@ export async function startRum(options: RumOptions): Promise<RumStatus> {
 					? (count) => console.info(`${PREFIX} scrubbed query strings from ${count} attributes`)
 					: undefined,
 				waitFor: gate.wait,
+				identity: () => stamped,
 			}),
 			// Every switch is set explicitly, including the ones being turned
 			// off, so that a version bump of the underlying SDK cannot quietly
@@ -219,8 +220,8 @@ export async function startRum(options: RumOptions): Promise<RumStatus> {
 	started = { options: resolved, propagateTo };
 
 	// Identity and the backend checks are independent, and both are already
-	// running behind live telemetry: spans buffered in this window get the stamp
-	// too, because `setGlobalAttributes` applies to everything not yet sent.
+	// running behind live telemetry: every span held by the gate gets the stamp
+	// when it goes out, whether it started before identity or after.
 	const [backends, identified] = await Promise.all([
 		connectBackends(resolved, propagateTo),
 		applyIdentity(resolved.user).finally(() => {
@@ -229,6 +230,22 @@ export async function startRum(options: RumOptions): Promise<RumStatus> {
 		}),
 	]);
 	return { started: true, identified, backends };
+}
+
+/**
+ * Everything identity has stamped so far, for spans that started before it.
+ *
+ * The underlying SDK applies global attributes in `onStart`, so a span already
+ * open when identity lands never receives them — see `identity` in
+ * ./exporter.ts, which reads this on the way out. Latest write wins here,
+ * matching what a span starting now would get.
+ */
+let stamped: RumAttributes | null = null;
+
+/** The one place identity is written, so the exporter's copy can't drift. */
+function stamp(attributes: RumAttributes): void {
+	stamped = { ...(stamped ?? {}), ...attributes };
+	Rum.setGlobalAttributes(attributes);
 }
 
 /**
@@ -241,7 +258,7 @@ export async function startRum(options: RumOptions): Promise<RumStatus> {
 async function applyIdentity(user: ResolvedRumOptions["user"]): Promise<boolean> {
 	if (user === null) return false;
 	if (typeof user !== "function") {
-		Rum.setGlobalAttributes(userAttributes(user));
+		stamp(userAttributes(user));
 		return true;
 	}
 	let resolvedUser: RumUser | null;
@@ -254,7 +271,7 @@ async function applyIdentity(user: ResolvedRumOptions["user"]): Promise<boolean>
 		return false;
 	}
 	if (resolvedUser === null || resolvedUser === undefined) return false;
-	Rum.setGlobalAttributes(userAttributes(resolvedUser));
+	stamp(userAttributes(resolvedUser));
 	return true;
 }
 
@@ -351,7 +368,7 @@ export function identifyUser(user: RumUser): void {
 		warn("identifyUser() was called before startRum(). Nothing was recorded.");
 		return;
 	}
-	Rum.setGlobalAttributes(userAttributes(user));
+	stamp(userAttributes(user));
 }
 
 /**
@@ -391,5 +408,6 @@ export function sessionId(): string | undefined {
 export function stopRum(): void {
 	if (started === undefined) return;
 	started = undefined;
+	stamped = null;
 	Rum.deinit();
 }

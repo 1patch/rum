@@ -21,13 +21,10 @@ export type ScrubOptions = {
 	scrubQueryStrings: boolean;
 	onScrub?: (count: number) => void;
 	/**
-	 * Hold the first export until this settles — the identity gate. Every span
-	 * still in the buffer when it settles gets the person stamped on it, because
-	 * global attributes are read at serialisation, not at span creation.
+	 * Hold the first export until this settles — the identity gate.
 	 *
-	 * Without it, the head of every session is anonymous: the document-load spans
-	 * exist before any session request can have answered, and once a batch is
-	 * serialised the stamp can no longer reach it. The first caller to wire
+	 * Without it the head of every session is anonymous: the document-load spans
+	 * exist before any session request can have answered. The first caller to wire
 	 * identity found exactly that — "only the first ~2s of page-load spans stay
 	 * anonymous" — and a rule with a two-second hole in it is not a rule.
 	 *
@@ -35,6 +32,21 @@ export type ScrubOptions = {
 	 * there, this defers a batch; it never drops one.
 	 */
 	waitFor?: Promise<unknown>;
+	/**
+	 * Who to stamp on a held span, read at export rather than at span creation.
+	 *
+	 * Waiting is not enough on its own, which cost a staging verification to
+	 * learn: the underlying SDK copies global attributes onto a span in its
+	 * processor's `onStart`, so a span that had already STARTED when identity
+	 * arrived stays anonymous however long its batch is held. `documentLoad`,
+	 * `documentFetch`, `resourceFetch` and `webvitals` all start at init, which is
+	 * every span of the first page load.
+	 *
+	 * So the gate delays, and this fills in. Only keys the span is missing: a
+	 * span that started after a later `identifyUser` already carries that
+	 * person's attributes, and the older stamp must not overwrite them.
+	 */
+	identity?: () => Record<string, unknown> | null;
 };
 
 /**
@@ -84,7 +96,13 @@ export function buildExporter(
  * Separate from `buildExporter` so it can be tested without a live exporter.
  */
 export function scrubOnExport<E>(exporter: E, options: ScrubOptions): E {
-	if (!options.scrubQueryStrings && options.waitFor === undefined) return exporter;
+	if (
+		!options.scrubQueryStrings &&
+		options.waitFor === undefined &&
+		options.identity === undefined
+	) {
+		return exporter;
+	}
 
 	const patchable = exporter as unknown as PatchableExporter;
 	const send = patchable.export.bind(exporter);
@@ -102,6 +120,16 @@ export function scrubOnExport<E>(exporter: E, options: ScrubOptions): E {
 	}
 	patchable.export = (spans, resultCallback) => {
 		const deliver = () => {
+			const identity = options.identity?.() ?? null;
+			if (identity !== null) {
+				for (const span of spans) {
+					if (span === null || span === undefined) continue;
+					if (span.attributes === null || typeof span.attributes !== "object") continue;
+					for (const [key, value] of Object.entries(identity)) {
+						if (span.attributes[key] === undefined) span.attributes[key] = value;
+					}
+				}
+			}
 			if (options.scrubQueryStrings) {
 				let scrubbed = 0;
 				for (const span of spans) {
