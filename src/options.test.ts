@@ -175,10 +175,24 @@ describe("ignoreUrls", () => {
 		expect((ours as RegExp).test("https://api.acme.com/v1/traces")).toBe(false);
 	});
 
+	// The probe goes to the CALLER's backend, so the ingest-origin matcher above
+	// never covers it. Untouched, every page load ships spans for requests this
+	// library invented — noise in someone else's telemetry.
+	test("always ignores our own CORS probe, on any origin", () => {
+		const probe = resolveOptions(valid).ignoreUrls[1];
+		expect(probe).toBeInstanceOf(RegExp);
+		const m = probe as RegExp;
+		expect(m.test("https://api.acme.com/.well-known/onepatch-rum-probe")).toBe(true);
+		expect(m.test("https://other.example/.well-known/onepatch-rum-probe?cb=1")).toBe(true);
+		// Not a blanket well-known match, and not a prefix match on a real route.
+		expect(m.test("https://api.acme.com/.well-known/openid-configuration")).toBe(false);
+		expect(m.test("https://api.acme.com/.well-known/onepatch-rum-probe/sub")).toBe(false);
+	});
+
 	test("the caller's own entries are kept", () => {
 		const resolved = resolveOptions({ ...valid, ignoreUrls: ["https://plausible.io/api/event"] });
-		expect(resolved.ignoreUrls).toHaveLength(2);
-		expect(resolved.ignoreUrls[1]).toBe("https://plausible.io/api/event");
+		expect(resolved.ignoreUrls).toHaveLength(3);
+		expect(resolved.ignoreUrls[2]).toBe("https://plausible.io/api/event");
 	});
 });
 
