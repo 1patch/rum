@@ -8,18 +8,55 @@ export type RumAttributeValue = string | number | boolean;
 
 export type RumAttributes = Record<string, RumAttributeValue>;
 
+/**
+ * A `RumUser` field. `null` clears a key that was set earlier; leaving it out
+ * means "don't touch it".
+ *
+ * That distinction is load-bearing on an update: `identifyUser({ id })` after a
+ * workspace switch leaves the OLD `org.id` on every subsequent span, because an
+ * absent key is not a removal. Pass `null` for what no longer applies. The first
+ * caller to hit this wrote `orgId: ""` — correct behaviour, discovered by
+ * reading our source, which is one reader further than anybody should have to go.
+ */
+export type RumAttributeUpdate = RumAttributeValue | null;
+
 export type RumUser = {
 	/** Your own stable identifier for the person. */
-	id?: string;
-	email?: string;
-	/** Display name. */
-	name?: string;
+	id?: RumAttributeUpdate;
+	email?: RumAttributeUpdate;
+	/**
+	 * Display name. Worth passing: an id is unreadable in a list of traces, and
+	 * matching one back to a person is the first step of every lookup.
+	 */
+	name?: RumAttributeUpdate;
 	/** The account, workspace, or tenant they are acting in. */
-	orgId?: string;
-	orgName?: string;
+	orgId?: RumAttributeUpdate;
+	/** Its name, for the same reason `name` is worth passing. */
+	orgName?: RumAttributeUpdate;
 	/** Anything else worth filtering sessions by, e.g. `plan: "enterprise"`. */
-	[key: string]: RumAttributeValue | undefined;
+	[key: string]: RumAttributeUpdate | undefined;
 };
+
+/**
+ * Called once at startup, and awaited: return who the person is as soon as your
+ * app knows. `null` means "nobody is signed in right now" — a login page, a
+ * cold load before the session request lands — which is honest, and which
+ * `identifyUser` fixes the moment it changes.
+ */
+export type RumUserResolver = () => RumUser | null | Promise<RumUser | null>;
+
+/**
+ * Identity is a REQUIRED startup option, in one of three shapes: the person, a
+ * resolver for the person, or the literal `"anonymous"`.
+ *
+ * It is required because the alternative — an optional field and a second
+ * `identifyUser` call to remember — is exactly what we shipped on our own app,
+ * and our own browser spans went a week with no one attached to them. Telemetry
+ * that can't answer "what did this person just do" is missing the R and the U in
+ * RUM. `"anonymous"` is a real answer for a site with no login; it just has to be
+ * one somebody typed on purpose.
+ */
+export type RumIdentity = RumUser | RumUserResolver | "anonymous";
 
 /**
  * Friendly key in, OpenTelemetry-conventional attribute out. The conventional

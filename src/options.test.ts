@@ -6,6 +6,7 @@ const valid = {
 	ingestToken: "op_aBcDeFgHiJkLmNoPqRsTuVwXyZ012345",
 	appName: "acme-web",
 	appVersion: "9f1c0aa",
+	user: { id: "u_1" },
 };
 
 describe("ingestUrl", () => {
@@ -215,5 +216,59 @@ describe("warnings", () => {
 		const resolved = resolveOptions(valid);
 		expect(resolved.warnings).toHaveLength(1);
 		expect(resolved.warnings[0]).toContain("environment");
+	});
+});
+
+describe("user", () => {
+	// Identity is refused rather than warned about, unlike everything in the block
+	// above, because optional-plus-a-warning is exactly what shipped — and our own
+	// app's spans then went a week with nobody attached to them. Every refusal here
+	// names both ways out.
+	test("a person is accepted as-is", () => {
+		expect(resolveOptions(valid).user).toEqual({ id: "u_1" });
+	});
+
+	test("a resolver is passed through, to be called at startup", () => {
+		const resolver = () => ({ id: "u_2" });
+		expect(resolveOptions({ ...valid, user: resolver }).user).toBe(resolver);
+	});
+
+	test('"anonymous" is the deliberate way to have nobody', () => {
+		expect(resolveOptions({ ...valid, user: "anonymous" }).user).toBeNull();
+	});
+
+	test("omitting it refuses to start", () => {
+		const { user: _omitted, ...withoutUser } = valid;
+		expect(() => resolveOptions(withoutUser as typeof valid)).toThrow(RumConfigError);
+		expect(() => resolveOptions(withoutUser as typeof valid)).toThrow(/user is required/);
+	});
+
+	// Every `RumUser` field is optional on purpose, so callers can stamp whatever
+	// they have — which makes `{}` type-check. It has to be caught here instead.
+	test("an empty object is refused, not silently accepted", () => {
+		expect(() => resolveOptions({ ...valid, user: {} })).toThrow(/stamps nothing/);
+	});
+
+	test("attributes with no id and no email are refused", () => {
+		expect(() => resolveOptions({ ...valid, user: { plan: "enterprise" } })).toThrow(
+			/needs an `id` or an `email`/,
+		);
+	});
+
+	// `null` means "clear this key", which is meaningful on an update and empty at
+	// startup — there is nothing to clear yet, so it identifies nobody.
+	test("an id that is null or blank identifies nobody, and is refused", () => {
+		expect(() => resolveOptions({ ...valid, user: { id: null } })).toThrow(
+			/needs an `id` or an `email`/,
+		);
+		expect(() => resolveOptions({ ...valid, user: { id: "   " } })).toThrow(
+			/needs an `id` or an `email`/,
+		);
+	});
+
+	test("null, a string, an array, a number are all refused", () => {
+		for (const bad of [null, "u_1", ["u_1"], 42]) {
+			expect(() => resolveOptions({ ...valid, user: bad as never })).toThrow(RumConfigError);
+		}
 	});
 });

@@ -17,7 +17,25 @@ import type { RumOtelWebExporterOptions } from "@hyperdx/otel-web";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { scrubAttributes } from "./scrub.js";
 
-export type ScrubOptions = { scrubQueryStrings: boolean; onScrub?: (count: number) => void };
+export type ScrubOptions = {
+	scrubQueryStrings: boolean;
+	onScrub?: (count: number) => void;
+	/**
+	 * Hold the first export until this settles — the identity gate. Every span
+	 * still in the buffer when it settles gets the person stamped on it, because
+	 * global attributes are read at serialisation, not at span creation.
+	 *
+	 * Without it, the head of every session is anonymous: the document-load spans
+	 * exist before any session request can have answered, and once a batch is
+	 * serialised the stamp can no longer reach it. The first caller to wire
+	 * identity found exactly that — "only the first ~2s of page-load spans stay
+	 * anonymous" — and a rule with a two-second hole in it is not a rule.
+	 *
+	 * See `identityGate` in ./index.ts for what bounds the wait. Whatever happens
+	 * there, this defers a batch; it never drops one.
+	 */
+	waitFor?: Promise<unknown>;
+};
 
 /**
  * The SDK's `exporter` option carries a `factory` — it is read at runtime and
@@ -66,20 +84,43 @@ export function buildExporter(
  * Separate from `buildExporter` so it can be tested without a live exporter.
  */
 export function scrubOnExport<E>(exporter: E, options: ScrubOptions): E {
-	if (!options.scrubQueryStrings) return exporter;
+	if (!options.scrubQueryStrings && options.waitFor === undefined) return exporter;
 
 	const patchable = exporter as unknown as PatchableExporter;
 	const send = patchable.export.bind(exporter);
+	// The gate opens once, and every batch that arrives before it does waits —
+	// not just the first. A second batch cutting ahead would be exactly the
+	// anonymous-spans bug again, on a slower connection. Promise callbacks run
+	// FIFO, so held batches keep their order.
+	const gate = options.waitFor;
+	let open = gate === undefined;
+	if (gate !== undefined) {
+		const openIt = () => {
+			open = true;
+		};
+		void gate.then(openIt, openIt);
+	}
 	patchable.export = (spans, resultCallback) => {
-		let scrubbed = 0;
-		for (const span of spans) {
-			// A span whose attributes aren't a plain object isn't ours to touch.
-			if (span === null || span === undefined) continue;
-			if (span.attributes === null || typeof span.attributes !== "object") continue;
-			scrubbed += scrubAttributes(span.attributes);
+		const deliver = () => {
+			if (options.scrubQueryStrings) {
+				let scrubbed = 0;
+				for (const span of spans) {
+					// A span whose attributes aren't a plain object isn't ours to touch.
+					if (span === null || span === undefined) continue;
+					if (span.attributes === null || typeof span.attributes !== "object") continue;
+					scrubbed += scrubAttributes(span.attributes);
+				}
+				if (scrubbed > 0) options.onScrub?.(scrubbed);
+			}
+			send(spans, resultCallback);
+		};
+		if (open || gate === undefined) {
+			deliver();
+			return;
 		}
-		if (scrubbed > 0) options.onScrub?.(scrubbed);
-		send(spans, resultCallback);
+		// `.then` on both paths: a rejected gate must still deliver the batch.
+		// Telemetry is never the thing that gets dropped here.
+		void gate.then(deliver, deliver);
 	};
 	return exporter;
 }

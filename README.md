@@ -16,10 +16,12 @@ startRum({
   environment: "production",
   appVersion: process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA,
   connectTracesTo: ["https://api.acme.com"],
+  // Required. The person, a resolver for them, or "anonymous".
+  user: async () => (await getSession())?.user ?? null,
 });
 
-// As soon as you know who is here:
-identifyUser({ email: user.email, id: user.id, orgId: user.orgId });
+// When that changes — a sign-in, an org switch:
+identifyUser({ id: user.id, email: user.email, orgId: user.orgId });
 ```
 
 The ingest token is write-only, append-only and scoped to your tenant. It is designed to ship in a frontend bundle, the same way a Sentry DSN does.
@@ -39,6 +41,7 @@ There is no session replay. No DOM is captured, no keystrokes, no form contents.
 | `appName` | Becomes `service.name`. Name it `<service>-web` after the backend it talks to, and keep it stable; every query pivots on it. |
 | `environment` | `production`, `staging`, … Becomes `deployment.environment.name`. Read it from the same source your backend does. |
 | `appVersion` | Required. Becomes `service.version`; pass the commit sha your build already exposes. |
+| `user` | **Required.** Who is using the app: the person (`{ id, email }`), a resolver called once at startup and awaited (`() => session?.user ?? null`), or the literal `"anonymous"`. See below. |
 | `connectTracesTo` | Cross-origin backends to join traces with, as explicit origins. See below. |
 | `skipBackendCheck` | Skip the startup check on those origins. Read the next section first. |
 | `ignoreUrls` | Extra URLs to leave untraced. Your ingest origin is always on this list. |
@@ -51,6 +54,40 @@ Functions: `startRum`, `identifyUser`, `recordAction`, `recordError`, `sessionId
 `identifyUser` takes `id`, `email`, `name`, `orgId`, `orgName` and anything else you want to filter sessions by. The first five become the conventional `user.*` / `org.*` attributes; the rest pass through as you wrote them.
 
 `recordAction("ran-workflow", { workflowId })` names a step in your product's own vocabulary. Clicks and navigations are already captured; use this for the thing you would actually search for.
+
+## user is required
+
+Telemetry nobody is attached to answers "what happened on the site" and never "what did *this* person just do" — which is the question an investigation starts from, and most of why RUM exists. So identity is not an option you can leave off; `startRum` will not compile, and will not start, without one of:
+
+```ts
+user: { id: session.userId, email: session.email }   // you already know
+user: async () => (await me())?.user ?? null         // you will know shortly
+user: "anonymous"                                    // this app has no sign-in
+```
+
+A resolver is called once and awaited. Returning `null` is honest — a login page, a cold load before the session request lands — and telemetry flows either way; the promise `startRum` returns tells you which happened:
+
+```ts
+const status = await startRum({ …, user: () => session?.user ?? null });
+status.identified;  // false when nobody was attached
+```
+
+Pass names, not only ids: `user.id` and `org.id` are unreadable in a list of traces, and turning one back into a person or a customer is the first step of every lookup.
+
+The first batch of spans waits up to three seconds for identity, so the page-load spans — which exist before any session request can have answered — carry the person too. The wait ends the moment identity settles, and also the moment the page starts to go away, so it never costs you telemetry.
+
+### Updating it
+
+Call `identifyUser` whenever identity changes: a sign-in, a workspace switch. It applies to spans already buffered but not yet sent, so the stamp is not just prospective.
+
+Pass `null` for anything that no longer applies, because an absent key means "leave it as it was":
+
+```ts
+identifyUser({ id: user.id, orgId: null, orgName: null });  // left the workspace
+identifyUser({ id: user.id });                              // still tagged with the old org
+```
+
+We learned the required-option part the hard way on our own app: identity was a second call, the second call was never written, and a week of our own browser spans had nobody on them. An option you can forget is a bug you ship.
 
 ## connectTracesTo, and why it is opt-in per origin
 

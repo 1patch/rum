@@ -64,6 +64,7 @@ const valid = {
 	ingestToken: "op_aBcDeFgHiJkLmNoPqRsTuVwXyZ012345",
 	appName: "acme-web",
 	appVersion: "9f1c0aa",
+	user: { id: "u_1", email: "sam@acme.com" },
 	environment: "production",
 };
 
@@ -324,11 +325,83 @@ describe("connectTracesTo", () => {
 	});
 });
 
+describe("identity at startup", () => {
+	test("the required user is stamped before the promise resolves", async () => {
+		const status = await startRum(valid);
+		expect(status.identified).toBe(true);
+		expect(calls.globalAttributes[0]).toEqual({
+			"user.id": "u_1",
+			"user.email": "sam@acme.com",
+		});
+	});
+
+	test("a resolver is awaited — the case where the session lands after startup", async () => {
+		let resolveMe: ((user: { id: string }) => void) | undefined;
+		const pending = new Promise<{ id: string }>((resolve) => {
+			resolveMe = resolve;
+		});
+		const starting = startRum({ ...valid, user: () => pending });
+		// Telemetry is already flowing here; only the stamp is outstanding.
+		await Promise.resolve();
+		expect(calls.init).toHaveLength(1);
+		expect(calls.globalAttributes).toHaveLength(0);
+
+		resolveMe?.({ id: "u_late" });
+		const status = await starting;
+		expect(status.identified).toBe(true);
+		expect(calls.globalAttributes[0]).toEqual({ "user.id": "u_late" });
+	});
+
+	test("a resolver returning null is honest, not an error — nobody is signed in yet", async () => {
+		const status = await startRum({ ...valid, user: () => null });
+		expect(status.started).toBe(true);
+		expect(status.identified).toBe(false);
+		expect(calls.globalAttributes).toHaveLength(0);
+	});
+
+	test('"anonymous" starts, and says so on the status', async () => {
+		const status = await startRum({ ...valid, user: "anonymous" });
+		expect(status.started).toBe(true);
+		expect(status.identified).toBe(false);
+	});
+
+	// The caller's auth code is the one thing here that isn't ours, so it is the one
+	// thing that can throw. Losing the stamp is acceptable; losing telemetry is not.
+	test("a resolver that throws costs the stamp and nothing else", async () => {
+		const warnings: string[] = [];
+		const original = console.warn;
+		console.warn = (message: string) => warnings.push(String(message));
+		try {
+			const status = await startRum({
+				...valid,
+				user: () => {
+					throw new Error("session fetch failed");
+				},
+			});
+			expect(status.started).toBe(true);
+			expect(status.identified).toBe(false);
+			expect(warnings.join(" ")).toContain("session fetch failed");
+		} finally {
+			console.warn = original;
+		}
+	});
+
+	test("startRum refuses outright when user is missing", async () => {
+		const { user: _omitted, ...withoutUser } = valid;
+		const status = await startRum(withoutUser as typeof valid);
+		expect(status.started).toBe(false);
+		expect(status.identified).toBe(false);
+		expect(status.error).toContain("user is required");
+		expect(calls.init).toHaveLength(0);
+	});
+});
+
 describe("recording", () => {
 	test("identifyUser maps to conventional attributes", async () => {
 		await startRum(valid);
 		identifyUser({ email: "zoe@acme.com", orgId: "org_7" });
-		expect(calls.globalAttributes[0]).toEqual({
+		// [0] is the required `user` option applied at startup; this is the update.
+		expect(calls.globalAttributes.at(-1)).toEqual({
 			"user.email": "zoe@acme.com",
 			"org.id": "org_7",
 		});
