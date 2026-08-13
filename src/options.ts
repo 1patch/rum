@@ -7,7 +7,16 @@
  * as "there is no RUM data" rather than as something anyone can act on.
  */
 
-import { originMatcher } from "./probe.js";
+import { originMatcher, PROBE_PATH } from "./probe.js";
+
+/**
+ * Our own CORS probes, on any origin. The probe goes to the caller's backend —
+ * not to the ingest origin — so the exporter matcher below doesn't cover it, and
+ * without this every page load ships a handful of spans for requests this
+ * library invented. Customer-facing telemetry should contain their traffic and
+ * nothing of ours.
+ */
+const PROBE_MATCHER = new RegExp(`${PROBE_PATH.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:[?#]|$)`);
 
 /** A write-only tenant ingest token. Deliberately safe to ship in a bundle. */
 const TOKEN_SHAPE = /^op_[A-Za-z0-9_-]{16,}$/;
@@ -252,10 +261,15 @@ export function resolveOptions(
 		appVersion,
 		crossOriginBackends: resolveBackends(options.connectTracesTo, pageOrigin),
 		checkBackends: options.skipBackendCheck !== true,
-		// Prepended, not appended: the SDK walks this list in order, and the entry
-		// that matters most is the one that keeps the exporter's own POSTs from
-		// being traced — which would generate spans, whose delivery generates spans.
-		ignoreUrls: [originMatcher(new URL(tracesUrl).origin), ...(options.ignoreUrls ?? [])],
+		// Prepended, not appended: the SDK walks this list in order, and the entries
+		// that matter most are the ones that keep this library's own requests out of
+		// the customer's telemetry — the exporter's POSTs (whose spans would generate
+		// deliveries, which would generate spans) and the CORS probes.
+		ignoreUrls: [
+			originMatcher(new URL(tracesUrl).origin),
+			PROBE_MATCHER,
+			...(options.ignoreUrls ?? []),
+		],
 		scrubQueryStrings: options.scrubQueryStrings === true,
 		captureConsole: options.captureConsole === true,
 		debug: options.debug === true,
