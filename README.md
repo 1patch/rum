@@ -50,7 +50,7 @@ There is no session replay. No DOM is captured, no keystrokes, no form contents.
 | `captureConsole` | Also forward `console.*`. Off by default — console lines carry personal data more often than spans do. |
 | `debug` | Log what the SDK is doing. |
 
-Functions: `startRum`, `identifyUser`, `recordAction`, `recordError`, `sessionId`, `stopRum`.
+Functions: `startRum`, `connectTracesTo`, `identifyUser`, `recordAction`, `recordError`, `sessionId`, `stopRum`.
 
 `identifyUser` takes `id`, `email`, `name`, `orgId`, `orgName` and anything else you want to filter sessions by. The first five become the conventional `user.*` / `org.*` attributes; the rest pass through as you wrote them.
 
@@ -108,6 +108,28 @@ const status = await startRum({ …, connectTracesTo: ["https://api.acme.com"] }
 Wildcards are refused. `connectTracesTo: ["https://*"]` would attach trace headers to every third-party request the page makes — your payment provider, your CDN, your analytics — and any one of them rejecting the header breaks that request. List the backends you own.
 
 If you already know your CORS policy allows `traceparent`, `skipBackendCheck: true` connects without asking.
+
+### Backends discovered after login
+
+Use the exported `connectTracesTo(origins)` function when login or an org switch supplies dedicated backend URLs. It **replaces the complete cross-origin list**, so include the static origins every time. It updates the running fetch and XHR instrumentation without restarting RUM.
+
+```ts
+import { connectTracesTo } from "@onepatch/rum";
+
+const staticOrigins = ["https://api.acme.com"];
+// After resolving the current organization and before its first API call:
+const status = await connectTracesTo([...staticOrigins, org.backendUrl]);
+// Inspect status.error and status.backends; telemetry failure must not block the app.
+
+// On logout or before an org switch, immediately revoke the previous org's target:
+void connectTracesTo(staticOrigins);
+// Or disable all cross-origin propagation:
+void connectTracesTo([]);
+```
+
+Removed origins stop receiving trace headers immediately. New origins are enabled only after the same CORS checks as startup pass; requests made while a check is pending still work but have no cross-origin join. Repeated calls reuse successful or in-flight checks, and a previously rejected origin is retried. Late probes from a previous org or a stopped SDK cannot restore removed origins. `skipBackendCheck` applies to updates too.
+
+Invalid lists return an error without changing the previous list. The function never rejects; before startup it returns `started: false`. Use explicit trusted first-party origins, never a wildcard or arbitrary user input. A successful probe checks CORS only: verify a real frontend and backend span share a trace ID for every origin, environment, and login/org-switch path.
 
 ## Query strings are kept, unless you say otherwise
 
