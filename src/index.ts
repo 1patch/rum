@@ -23,6 +23,7 @@ import {
 	type ResolvedRumOptions,
 	RumConfigError,
 	type RumOptions,
+	resolveBackends,
 	resolveOptions,
 } from "./options.js";
 import { type BackendCheck, checkBackend, originMatcher } from "./probe.js";
@@ -92,6 +93,18 @@ export type RumStatus = {
 	backends: BackendCheck[];
 };
 
+export type TraceConnectionStatus = {
+	started: boolean;
+	error?: string;
+	backends: BackendCheck[];
+};
+
+type Connection = {
+	matcher: RegExp;
+	check?: BackendCheck;
+	pending: Promise<BackendCheck>;
+};
+
 type Started = {
 	options: ResolvedRumOptions;
 	/**
@@ -101,6 +114,7 @@ type Started = {
 	 * propagation on for an origin without re-initialising anything.
 	 */
 	propagateTo: RegExp[];
+	connections: Map<string, Connection>;
 };
 
 let started: Started | undefined;
@@ -218,13 +232,14 @@ export async function startRum(options: RumOptions): Promise<RumStatus> {
 
 	publishSessionId();
 
-	started = { options: resolved, propagateTo };
+	const state: Started = { options: resolved, propagateTo, connections: new Map() };
+	started = state;
 
 	// Identity and the backend checks are independent, and both are already
 	// running behind live telemetry: every span held by the gate gets the stamp
 	// when it goes out, whether it started before identity or after.
 	const [backends, identified] = await Promise.all([
-		connectBackends(resolved, propagateTo),
+		connectBackends(state, resolved.crossOriginBackends),
 		applyIdentity(resolved.user).finally(() => {
 			clearTimeout(graceTimer);
 			gate.open();
@@ -324,35 +339,85 @@ function publishSessionId(): void {
  * trade against the alternative, which is sending a header a backend might
  * reject and having the browser cancel a real request.
  */
-async function connectBackends(
-	options: ResolvedRumOptions,
-	propagateTo: RegExp[],
-): Promise<BackendCheck[]> {
-	if (options.crossOriginBackends.length === 0) return [];
-
-	if (!options.checkBackends) {
-		for (const origin of options.crossOriginBackends) propagateTo.push(originMatcher(origin));
-		return options.crossOriginBackends.map((origin) => ({
-			origin,
-			allowed: true,
-			detail: "not checked (skipBackendCheck was set)",
-		}));
+async function connectBackends(state: Started, origins: string[]): Promise<BackendCheck[]> {
+	// Revoke removed origins synchronously, before waiting on any new probes.
+	for (const origin of state.connections.keys()) {
+		if (!origins.includes(origin)) state.connections.delete(origin);
 	}
+	refreshPropagation(state);
 
 	return Promise.all(
-		options.crossOriginBackends.map(async (origin) => {
-			const check = await checkBackend(origin, fetch);
-			if (check.allowed) {
-				propagateTo.push(originMatcher(origin));
-			} else {
-				warn(`${origin} will not be trace-joined — ${check.detail}`);
+		origins.map(async (origin) => {
+			let connection = state.connections.get(origin);
+			// Share checks that are pending or successful. A rejected origin can be
+			// retried by the next update, for example after a CORS deployment.
+			if (!connection || connection.check?.allowed === false) {
+				connection = {
+					matcher: originMatcher(origin),
+					pending: state.options.checkBackends
+						? checkBackend(origin, globalThis.fetch)
+						: Promise.resolve({
+								origin,
+								allowed: true,
+								detail: "not checked (skipBackendCheck was set)",
+							}),
+				};
+				state.connections.set(origin, connection);
 			}
-			if (options.debug && check.allowed) {
+			const check = await connection.pending;
+			// An org switch or stop/restart may have superseded this probe. It must
+			// never re-enable an origin that a newer call has removed.
+			if (started !== state || state.connections.get(origin) !== connection) {
+				return { origin, allowed: false, detail: "superseded by a newer configuration or stopRum" };
+			}
+			connection.check = check;
+			refreshPropagation(state);
+			if (!check.allowed) warn(`${origin} will not be trace-joined — ${check.detail}`);
+			else if (state.options.debug)
 				console.info(`${PREFIX} ${origin} trace-joined — ${check.detail}`);
-			}
 			return check;
 		}),
 	);
+}
+
+function refreshPropagation(state: Started): void {
+	const matchers = [...state.connections.values()]
+		.filter((connection) => connection.check?.allowed)
+		.map((connection) => connection.matcher);
+	// Fetch and XHR both hold this array. Keep its identity when replacing it.
+	state.propagateTo.splice(0, state.propagateTo.length, ...matchers);
+}
+
+/**
+ * Replace the complete cross-origin trace allowlist after login or an org
+ * switch. Include the app's static origins as well as the current org's origins.
+ * Removed origins stop propagating immediately; new ones wait for the same
+ * CORS checks as startup. Pass [] to disable all cross-origin propagation.
+ *
+ * Never rejects. Await the result before requests that need correlation, but
+ * do not block the app on telemetry. Requests made before a probe passes still
+ * work; they simply are not trace-joined. A probe is not proof of a stored join.
+ */
+export async function connectTracesTo(origins: string[]): Promise<TraceConnectionStatus> {
+	const state = started;
+	if (!state) {
+		return {
+			started: false,
+			error: "connectTracesTo() was called before startRum()",
+			backends: [],
+		};
+	}
+	try {
+		if (!Array.isArray(origins)) {
+			throw new RumConfigError("connectTracesTo must be an array of origin strings.");
+		}
+		const resolved = resolveBackends(origins, window.location?.origin);
+		return { started: true, backends: await connectBackends(state, resolved) };
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		warn(`trace origins unchanged. ${message}`);
+		return { started: true, error: message, backends: [] };
+	}
 }
 
 /**
@@ -408,6 +473,8 @@ export function sessionId(): string | undefined {
 /** Stop collecting and detach. Mainly for tests and for hot reloading. */
 export function stopRum(): void {
 	if (started === undefined) return;
+	started.propagateTo.splice(0);
+	started.connections.clear();
 	started = undefined;
 	stamped = null;
 	Rum.deinit();

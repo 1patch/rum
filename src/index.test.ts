@@ -55,9 +55,8 @@ mock.module("@hyperdx/otel-web", () => ({
 	},
 }));
 
-const { identifyUser, recordAction, recordError, sessionId, startRum, stopRum } = await import(
-	"./index.js"
-);
+const { connectTracesTo, identifyUser, recordAction, recordError, sessionId, startRum, stopRum } =
+	await import("./index.js");
 
 const valid = {
 	ingestUrl: "https://acme.logger.onepatch.dev",
@@ -322,6 +321,157 @@ describe("connectTracesTo", () => {
 		const status = await startRum({ ...valid, connectTracesTo: ["https://app.acme.com/api"] });
 		expect(probes).toBe(0);
 		expect(status.backends).toEqual([]);
+	});
+});
+
+describe("dynamic trace origins", () => {
+	test("connects after login without reinitializing fetch or XHR", async () => {
+		globalThis.fetch = (async () => ({ status: 404 })) as unknown as typeof fetch;
+		await startRum(valid);
+		const targets = propagateUrls();
+		const status = await connectTracesTo([
+			"https://dedicated.acme.com/api",
+			"https://dedicated.acme.com",
+		]);
+		expect(status.error).toBeUndefined();
+		expect(status.backends).toHaveLength(1);
+		expect(status.backends[0]?.allowed).toBe(true);
+		expect(calls.init).toHaveLength(1);
+		expect(propagateUrls()).toBe(targets);
+		const xhr = calls.init[0]?.instrumentations?.xhr as { propagateTraceHeaderCorsUrls: RegExp[] };
+		expect(xhr.propagateTraceHeaderCorsUrls).toBe(targets);
+		expect(targets.some((pattern) => pattern.test("https://dedicated.acme.com/v1/run"))).toBe(true);
+		expect(
+			targets.some((pattern) => pattern.test("https://dedicated.acme.com.evil.test/v1/run")),
+		).toBe(false);
+	});
+
+	test("an org switch revokes old origins immediately and preserves static ones", async () => {
+		globalThis.fetch = (async () => ({ status: 404 })) as unknown as typeof fetch;
+		await startRum({ ...valid, connectTracesTo: ["https://api.acme.com", "https://old.acme.com"] });
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		globalThis.fetch = (async () => {
+			await gate;
+			return { status: 404 };
+		}) as unknown as typeof fetch;
+		const update = connectTracesTo(["https://api.acme.com", "https://new.acme.com"]);
+		expect(propagateUrls()).toHaveLength(1);
+		expect("https://api.acme.com/v1").toMatch(propagateUrls()[0] as RegExp);
+		release();
+		await update;
+		expect(propagateUrls()).toHaveLength(2);
+		await connectTracesTo([]);
+		expect(propagateUrls()).toEqual([]);
+	});
+
+	test("an old startup probe cannot reconnect an origin after an org switch", async () => {
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		globalThis.fetch = (async () => {
+			await gate;
+			return { status: 404 };
+		}) as unknown as typeof fetch;
+		const startup = startRum({ ...valid, connectTracesTo: ["https://old.acme.com"] });
+		await connectTracesTo([]);
+		release();
+		const result = await startup;
+		expect(result.backends[0]?.allowed).toBe(false);
+		expect(result.backends[0]?.detail).toContain("superseded");
+		expect(propagateUrls()).toEqual([]);
+	});
+
+	test("overlapping updates share probes and successful origins are not probed again", async () => {
+		let probes = 0;
+		globalThis.fetch = (async () => {
+			probes++;
+			return { status: 404 };
+		}) as unknown as typeof fetch;
+		await startRum(valid);
+		await Promise.all([
+			connectTracesTo(["https://api.acme.com"]),
+			connectTracesTo(["https://api.acme.com"]),
+		]);
+		expect(probes).toBe(3);
+		await connectTracesTo(["https://api.acme.com"]);
+		expect(probes).toBe(3);
+		expect(propagateUrls()).toHaveLength(1);
+	});
+
+	test("rejected credentialed propagation stays off and can be retried", async () => {
+		await startRum(valid);
+		globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+			if (init?.credentials === "include" && init.headers) throw new TypeError("Failed to fetch");
+			return { status: 404 };
+		}) as unknown as typeof fetch;
+		const rejected = await connectTracesTo(["https://api.acme.com"]);
+		expect(rejected.backends[0]?.allowed).toBe(false);
+		expect(propagateUrls()).toEqual([]);
+		globalThis.fetch = (async () => ({ status: 404 })) as unknown as typeof fetch;
+		expect((await connectTracesTo(["https://api.acme.com"])).backends[0]?.allowed).toBe(true);
+		expect(propagateUrls()).toHaveLength(1);
+	});
+
+	test("invalid targets never throw or change the previous allowlist", async () => {
+		await startRum({ ...valid, skipBackendCheck: true, connectTracesTo: ["https://api.acme.com"] });
+		for (const origins of [
+			["https://*.acme.com"],
+			["javascript:alert(1)"],
+			["no-url"],
+			[null],
+			undefined,
+			null,
+			"https://bad.acme.com",
+		]) {
+			const result = await connectTracesTo(origins as string[]);
+			expect(result.error).toBeDefined();
+			expect(propagateUrls()).toHaveLength(1);
+			expect("https://api.acme.com/path").toMatch(propagateUrls()[0] as RegExp);
+		}
+	});
+
+	test("is harmless before startup and after stop, including server rendering", async () => {
+		(globalThis as { window?: unknown }).window = undefined;
+		expect((await connectTracesTo(["https://api.acme.com"])).started).toBe(false);
+		fakeWindow();
+		await startRum(valid);
+		stopRum();
+		expect((await connectTracesTo([])).started).toBe(false);
+	});
+
+	test("late probes cannot survive stop and restart", async () => {
+		await startRum(valid);
+		const oldTargets = propagateUrls();
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		globalThis.fetch = (async () => {
+			await gate;
+			return { status: 404 };
+		}) as unknown as typeof fetch;
+		const pending = connectTracesTo(["https://old.acme.com"]);
+		stopRum();
+		await startRum(valid);
+		release();
+		expect((await pending).backends[0]?.allowed).toBe(false);
+		expect(oldTargets).toEqual([]);
+		expect(propagateUrls(1)).toEqual([]);
+	});
+
+	test("same-origin is omitted and skipped checks remain explicit", async () => {
+		await startRum({ ...valid, skipBackendCheck: true });
+		globalThis.fetch = (async () => {
+			throw new Error("must not probe");
+		}) as unknown as typeof fetch;
+		const result = await connectTracesTo(["https://app.acme.com/v1", "https://api.acme.com"]);
+		expect(result.backends).toHaveLength(1);
+		expect(result.backends[0]?.detail).toContain("not checked");
+		expect(propagateUrls()).toHaveLength(1);
 	});
 });
 

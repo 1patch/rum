@@ -241,7 +241,10 @@ function resolveTracesUrl(raw: string): { tracesUrl: string; insecure: boolean }
  * that request. There is no safe way to express "everywhere", so we refuse to
  * let anyone write it.
  */
-function resolveBackends(raw: string[] | undefined, pageOrigin: string | undefined): string[] {
+export function resolveBackends(
+	raw: string[] | undefined,
+	pageOrigin: string | undefined,
+): string[] {
 	if (raw === undefined) return [];
 	if (!Array.isArray(raw)) {
 		throw new RumConfigError("connectTracesTo must be an array of origin strings.");
