@@ -476,6 +476,42 @@ describe("dynamic trace origins", () => {
 });
 
 describe("identity at startup", () => {
+	test("a late startup resolver cannot restore the user after logout", async () => {
+		let resolve!: (user: { id: string; orgId: string }) => void;
+		const pending = new Promise<{ id: string; orgId: string }>((done) => {
+			resolve = done;
+		});
+		const starting = startRum({ ...valid, user: () => pending });
+		identifyUser({ id: null, orgId: null });
+		resolve({ id: "old-user", orgId: "old-org" });
+		await starting;
+		expect(calls.globalAttributes.at(-1)).toEqual({ "user.id": "", "org.id": "" });
+	});
+
+	test("an org update during startup overrides only that key", async () => {
+		let resolve!: (user: { id: string; orgId: string }) => void;
+		const pending = new Promise<{ id: string; orgId: string }>((done) => {
+			resolve = done;
+		});
+		const starting = startRum({ ...valid, user: () => pending });
+		identifyUser({ orgId: "new-org" });
+		resolve({ id: "same-user", orgId: "old-org" });
+		await starting;
+		expect(calls.globalAttributes.at(-1)).toEqual({ "user.id": "same-user", "org.id": "new-org" });
+	});
+
+	test("a stopped startup resolver cannot change a later SDK instance", async () => {
+		let resolve!: (user: { id: string }) => void;
+		const pending = new Promise<{ id: string }>((done) => {
+			resolve = done;
+		});
+		const oldStart = startRum({ ...valid, user: () => pending });
+		stopRum();
+		await startRum({ ...valid, user: { id: "new-user" } });
+		resolve({ id: "old-user" });
+		await oldStart;
+		expect(calls.globalAttributes.at(-1)).toEqual({ "user.id": "new-user" });
+	});
 	test("the required user is stamped before the promise resolves", async () => {
 		const status = await startRum(valid);
 		expect(status.identified).toBe(true);

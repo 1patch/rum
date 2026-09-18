@@ -115,6 +115,8 @@ type Started = {
 	 */
 	propagateTo: RegExp[];
 	connections: Map<string, Connection>;
+	/** Explicit updates win over the outstanding startup resolver, per key. */
+	pendingIdentityUpdates: RumAttributes | null;
 };
 
 let started: Started | undefined;
@@ -234,7 +236,12 @@ export async function startRum(options: RumOptions): Promise<RumStatus> {
 
 	publishSessionId();
 
-	const state: Started = { options: resolved, propagateTo, connections: new Map() };
+	const state: Started = {
+		options: resolved,
+		propagateTo,
+		connections: new Map(),
+		pendingIdentityUpdates: {},
+	};
 	started = state;
 
 	// Identity and the backend checks are independent, and both are already
@@ -242,7 +249,7 @@ export async function startRum(options: RumOptions): Promise<RumStatus> {
 	// when it goes out, whether it started before identity or after.
 	const [backends, identified] = await Promise.all([
 		connectBackends(state, resolved.crossOriginBackends),
-		applyIdentity(resolved.user).finally(() => {
+		applyIdentity(state, resolved.user).finally(() => {
 			clearTimeout(graceTimer);
 			gate.open();
 		}),
@@ -273,9 +280,13 @@ function stamp(attributes: RumAttributes): void {
  * code failing is not a reason for this library to stop collecting, and it is the
  * one shape here that runs someone else's code.
  */
-async function applyIdentity(user: ResolvedRumOptions["user"]): Promise<boolean> {
-	if (user === null) return false;
+async function applyIdentity(state: Started, user: ResolvedRumOptions["user"]): Promise<boolean> {
+	if (user === null) {
+		state.pendingIdentityUpdates = null;
+		return false;
+	}
 	if (typeof user !== "function") {
+		state.pendingIdentityUpdates = null;
 		stamp(userAttributes(user));
 		return true;
 	}
@@ -283,14 +294,24 @@ async function applyIdentity(user: ResolvedRumOptions["user"]): Promise<boolean>
 	try {
 		resolvedUser = await user();
 	} catch (error) {
+		state.pendingIdentityUpdates = null;
 		warn(
 			`the \`user\` resolver threw, so these spans have nobody attached: ${error instanceof Error ? error.message : String(error)}. Call identifyUser() once your session resolves.`,
 		);
 		return false;
 	}
-	if (resolvedUser === null || resolvedUser === undefined) return false;
-	stamp(userAttributes(resolvedUser));
-	return true;
+	// A logout, account switch, or stop/restart can happen while auth is pending.
+	// Never let the older snapshot overwrite a newer explicit identity update.
+	if (started !== state) return false;
+	const attributes = {
+		...(resolvedUser ? userAttributes(resolvedUser) : {}),
+		...state.pendingIdentityUpdates,
+	};
+	state.pendingIdentityUpdates = null;
+	if (Object.keys(attributes).length > 0) stamp(attributes);
+	return [attributes["user.id"], attributes["user.email"]].some(
+		(value) => value !== undefined && value !== "",
+	);
 }
 
 /** The resource attributes the SDK won't set itself, and everything else reads. */
@@ -436,7 +457,11 @@ export function identifyUser(user: RumUser): void {
 		warn("identifyUser() was called before startRum(). Nothing was recorded.");
 		return;
 	}
-	stamp(userAttributes(user));
+	const attributes = userAttributes(user);
+	if (started.pendingIdentityUpdates !== null) {
+		Object.assign(started.pendingIdentityUpdates, attributes);
+	}
+	stamp(attributes);
 }
 
 /**

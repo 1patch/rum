@@ -12,7 +12,7 @@ const w = window as typeof window & {
 	session: () => string | undefined;
 };
 
-w.rumStatus = await startRum({
+const starting = startRum({
 	ingestUrl: w.fixture.primary,
 	ingestToken: "op_synthetic_browser_test_00000000",
 	appName: "compatibility-web",
@@ -31,6 +31,10 @@ w.rumStatus = await startRum({
 	redactUrl: (url) =>
 		url.replace(/([?&#]token=)[^&#]*/g, "$1[redacted]").replace(/person%40example.com/g, "[email]"),
 });
+if (new URLSearchParams(location.search).has("logout-during-startup")) {
+	identifyUser({ id: null, orgId: null });
+}
+w.rumStatus = await starting;
 w.session = sessionId;
 w.flush = () => {
 	const provider = HyperDX.provider;

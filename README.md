@@ -197,3 +197,7 @@ bun run check   # biome + typecheck + tests + build
 ```
 
 Source lives at [github.com/1patch/rum](https://github.com/1patch/rum). Security reports: see [SECURITY.md](./SECURITY.md).
+
+### Identity changes during startup
+
+`startRum()` initializes tracing synchronously; its promise also waits for identity and backend probes. Connect auth-change listeners immediately after calling it, so logout and workspace changes do not wait for the probes. Keep an unresolved auth state pending in the initial resolver instead of returning `null` before auth has answered. Explicit `identifyUser()` updates take precedence over a late initial resolver, including `null` clears. If the app lazy-loads RUM, keep its React identity state module free of runtime SDK imports and pass an update callback from the lazy initializer.
