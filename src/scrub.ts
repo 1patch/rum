@@ -25,6 +25,8 @@ const URL_KEYS = new Set([
 	"location.href",
 	"document.referrer",
 	"http.referrer",
+	"http.target",
+	"http.route",
 ]);
 
 /** A key we should treat as a URL even if it isn't in the list above. */
@@ -67,12 +69,21 @@ export function stripQuery(value: string): string {
  * values changed, which the debug log reports so the behaviour is observable
  * rather than mysterious.
  */
-export function scrubAttributes(attributes: Record<string, unknown>): number {
+export function scrubAttributes(
+	attributes: Record<string, unknown>,
+	transform: (value: string) => string = stripQuery,
+): number {
 	let changed = 0;
 	for (const key of Object.keys(attributes)) {
 		const value = attributes[key];
 		if (typeof value !== "string" || !looksLikeUrlKey(key)) continue;
-		const stripped = stripQuery(value);
+		let stripped: string;
+		try {
+			stripped = transform(value);
+			if (typeof stripped !== "string") stripped = "[redacted]";
+		} catch {
+			stripped = "[redacted]";
+		}
 		if (stripped !== value) {
 			attributes[key] = stripped;
 			changed += 1;

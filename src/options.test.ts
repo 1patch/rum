@@ -9,6 +9,50 @@ const valid = {
 	user: { id: "u_1" },
 };
 
+describe("additionalTraceDestinations", () => {
+	test("preserves each collector's endpoint and headers and excludes its whole origin", () => {
+		const destination = {
+			url: "https://existing.example/otel/v1/traces",
+			headers: { authorization: "write-only-test" },
+		};
+		const resolved = resolveOptions({ ...valid, additionalTraceDestinations: [destination] });
+		expect(resolved.additionalTraceDestinations).toEqual([destination]);
+		expect(
+			resolved.ignoreUrls.some(
+				(entry) => entry instanceof RegExp && entry.test("https://existing.example/v1/logs"),
+			),
+		).toBe(true);
+		expect(
+			resolved.ignoreUrls.some(
+				(entry) => entry instanceof RegExp && entry.test("https://api.example/request"),
+			),
+		).toBe(false);
+	});
+	test.each([
+		[{ url: "https://acme.logger.onepatch.dev/v1/traces" }],
+		[{ url: "https://existing.example/v1/traces" }, { url: "https://existing.example/v1/traces" }],
+		[{ url: "http://existing.example/v1/traces" }],
+		[{ url: "https://user:password@existing.example/v1/traces" }],
+		[{ url: "https://existing.example/v1/traces#fragment" }],
+		[{ url: "not a URL" }],
+		[{ url: "https://existing.example/v1/traces", headers: { authorization: 5 } }],
+		[null],
+		null,
+	])("rejects malformed or duplicate destinations without exposing credentials", (destinations) => {
+		expect(() =>
+			resolveOptions({ ...valid, additionalTraceDestinations: destinations as never }),
+		).toThrow(RumConfigError);
+	});
+	test("supports loopback collectors", () => {
+		expect(
+			resolveOptions({
+				...valid,
+				additionalTraceDestinations: [{ url: "http://127.0.0.1:4318/v1/traces" }],
+			}).additionalTraceDestinations,
+		).toHaveLength(1);
+	});
+});
+
 describe("ingestUrl", () => {
 	test("becomes the OTLP traces endpoint", () => {
 		expect(resolveOptions(valid).tracesUrl).toBe("https://acme.logger.onepatch.dev/v1/traces");

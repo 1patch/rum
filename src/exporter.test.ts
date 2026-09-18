@@ -27,6 +27,48 @@ function fakeExporter() {
 }
 
 describe("scrubOnExport", () => {
+	test("an app redactor handles stable, legacy and navigation URL attributes", () => {
+		const { exporter, sent } = fakeExporter();
+		scrubOnExport(exporter, {
+			scrubQueryStrings: false,
+			redactUrl: (url) =>
+				url.replace(/token=[^&#]*/g, "token=[redacted]").replace("person%40example.com", "[email]"),
+		});
+		const url = "https://app.example/people/person%40example.com?token=secret&filter=active";
+		exporter.export(
+			[
+				{
+					attributes: Object.fromEntries(
+						["url.full", "http.url", "location.href", "prev.href", "http.target", "http.route"].map(
+							(key) => [key, url],
+						),
+					),
+				},
+			],
+			() => {},
+		);
+		for (const value of Object.values(sent[0]?.[0]?.attributes ?? {})) {
+			expect(value).toBe("https://app.example/people/[email]?token=[redacted]&filter=active");
+		}
+	});
+
+	test.each([
+		() => {
+			throw new Error("redactor failed");
+		},
+		() => undefined,
+	])("redactor failure never exports the original URL", (redactUrl) => {
+		const { exporter, sent } = fakeExporter();
+		scrubOnExport(exporter, { scrubQueryStrings: false, redactUrl: redactUrl as never });
+		expect(() =>
+			exporter.export(
+				[{ attributes: { "url.full": "https://app.example/?token=secret", "user.id": "keep" } }],
+				() => {},
+			),
+		).not.toThrow();
+		expect(sent[0]?.[0]?.attributes).toEqual({ "url.full": "[redacted]", "user.id": "keep" });
+	});
+
 	test("spans are scrubbed before the real exporter sees them", () => {
 		const { exporter, sent } = fakeExporter();
 		let scrubbed = 0;

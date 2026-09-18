@@ -32,12 +32,38 @@ One ordered, queryable record of what a person did — which page, which button,
 
 There is no session replay. No DOM is captured, no keystrokes, no form contents. That is a deliberate choice, not a missing feature: an investigation reads the action list, and skipping the recorder keeps the payload small, the privacy story ordinary, and retention uncomplicated.
 
+## Keeping an existing telemetry destination
+
+With version 0.5.0 or later, RUM can send the same traces to another OTLP HTTP collector:
+
+```ts
+startRum({
+  // ...the OnePatch, app and identity options above
+  additionalTraceDestinations: [{
+    url: "https://existing-collector.example/v1/traces",
+    headers: { authorization: "existing-browser-ingest-token" },
+  }],
+  // Keep the application's existing URL redaction, including tokens in URLs.
+  redactUrl: (url) => url.replace(/([?&#]token=)[^&#]*/g, "$1[redacted]"),
+});
+```
+
+Use only browser-safe, write-only ingest credentials. `url` is the full traces endpoint; headers belong only to that destination. Additional destinations receive the same span IDs, session/user attributes and URL redaction as OnePatch. Their origins are automatically excluded from tracing, including other signal exports to those origins. A slow or failing secondary does not hold OnePatch's export callback or cause successful OnePatch batches to be resent; each HTTP exporter owns its retries. Export failures appear in OTel diagnostics when `debug` is enabled.
+
+**Replace the existing browser tracer provider and its document/fetch/XHR instrumentation when installing RUM.** Initializing both is unsafe: the first global provider wins, and the two instrumentation sets can duplicate spans or leave the old exporter without traces. Keep existing log and metric providers and their destinations. Existing action helpers using `@opentelemetry/api` can use RUM's global tracer; remove cached tracers from any explicitly constructed old provider.
+
+`redactUrl` runs before either destination sees the trace, and before optional `scrubQueryStrings`. It covers page URLs, previous-route URLs, request URLs and referrers. Preserve the application's selective redaction when URL paths or query parameters carry credentials or email addresses. A callback that throws or returns a non-string replaces that attribute with `[redacted]`; it never sends the original value as a fallback.
+
+Before merging an installation, verify a browser journey against both destinations: one request span per actual request, matching span IDs, session and auth identity on the action, and redacted URLs. See the executable browser regression in `test/browser/`.
+
 ## Options
 
 | Option | |
 | --- | --- |
 | `ingestUrl` | Your tenant's OnePatch ingest URL. With or without a trailing `/v1/traces` — both work. |
 | `ingestToken` | Your `op_…` token. |
+| `additionalTraceDestinations` | Existing OTLP HTTP trace endpoints and their headers. Requires 0.5.0+. See migration instructions above. |
+| `redactUrl` | Apply your app’s URL redaction before every trace destination. Requires 0.5.0+. |
 | `appName` | Becomes `service.name`. Name it `<service>-web` after the backend it talks to, and keep it stable; every query pivots on it. |
 | `environment` | `production`, `staging`, … Becomes `deployment.environment.name`. Read it from the same source your backend does. |
 | `appVersion` | Required. Becomes `service.version`; pass the commit sha your build already exposes. |
