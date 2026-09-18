@@ -1,6 +1,6 @@
 {
   "name": "@onepatch/rum",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Browser telemetry for OnePatch \u2014 page views, clicks, errors and fetch spans, correlated with your backend traces.",
   "license": "Apache-2.0",
   "homepage": "https://onepatch.dev",

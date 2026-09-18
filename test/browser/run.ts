@@ -163,6 +163,32 @@ try {
 		`Browser dual-destination regression passed (${await browser.version()}); session, identity, URL redaction, single request spans, both collectors, and secondary failure verified.`,
 	);
 	await context.close();
+
+	// Logout while the initial auth resolver is pending must survive its result.
+	failSecondary = false;
+	received.primary.length = 0;
+	received.secondary.length = 0;
+	const logoutContext = await browser.newContext();
+	await logoutContext.route("**/*", (route) =>
+		new URL(route.request().url()).hostname === "127.0.0.1" ? route.continue() : route.abort(),
+	);
+	const logoutPage = await logoutContext.newPage();
+	await logoutPage.goto(`${app.url.origin}/?logout-during-startup=1`);
+	await logoutPage.waitForFunction(() => (window as unknown as { ready: boolean }).ready);
+	await logoutPage.evaluate("window.runJourney();");
+	await logoutPage.waitForTimeout(1200);
+	await logoutPage.evaluate("window.flush()");
+	await logoutPage.waitForTimeout(300);
+	for (const destination of ["primary", "secondary"] as const) {
+		for (const name of ["documentLoad", "named-action"]) {
+			const span = flatten(received[destination]).find((span) => span.name === name);
+			assert.ok(span, name);
+			assert.equal(span.values["user.id"], "");
+			assert.equal(span.values["org.id"], "");
+		}
+	}
+	await logoutContext.close();
+	console.log("Startup logout regression passed at both collectors.");
 } finally {
 	await browser.close();
 	app.stop(true);
