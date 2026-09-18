@@ -15,11 +15,15 @@
 
 import type { RumOtelWebExporterOptions } from "@hyperdx/otel-web";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
+import { mirrorExports } from "./mirror.js";
+import type { RumTraceDestination } from "./options.js";
 import { scrubAttributes } from "./scrub.js";
 
 export type ScrubOptions = {
 	scrubQueryStrings: boolean;
 	onScrub?: (count: number) => void;
+	additionalTraceDestinations?: RumTraceDestination[];
+	redactUrl?: (url: string) => string;
 	/**
 	 * Hold the first export until this settles — the identity gate.
 	 *
@@ -134,7 +138,11 @@ export function buildExporter(
 		url: config.url,
 		headers: { authorization: config.authHeader ?? "" },
 	});
-	return scrubOnExport(exporter, options);
+	const additional = (options.additionalTraceDestinations ?? []).map(
+		(destination) => new OTLPTraceExporter(destination),
+	);
+	// Redact and stamp ONCE, before fan-out, so no destination bypasses either.
+	return scrubOnExport(mirrorExports(exporter, additional), options);
 }
 
 /**
@@ -145,6 +153,7 @@ export function scrubOnExport<E>(exporter: E, options: ScrubOptions): E {
 	const floorMs = options.assetFloorMs ?? 0;
 	if (
 		!options.scrubQueryStrings &&
+		options.redactUrl === undefined &&
 		options.waitFor === undefined &&
 		options.identity === undefined &&
 		floorMs <= 0
@@ -184,13 +193,16 @@ export function scrubOnExport<E>(exporter: E, options: ScrubOptions): E {
 					}
 				}
 			}
-			if (options.scrubQueryStrings) {
+			if (options.scrubQueryStrings || options.redactUrl !== undefined) {
 				let scrubbed = 0;
 				for (const span of spans) {
 					// A span whose attributes aren't a plain object isn't ours to touch.
 					if (span === null || span === undefined) continue;
 					if (span.attributes === null || typeof span.attributes !== "object") continue;
-					scrubbed += scrubAttributes(span.attributes);
+					if (options.redactUrl !== undefined) {
+						scrubbed += scrubAttributes(span.attributes, options.redactUrl);
+					}
+					if (options.scrubQueryStrings) scrubbed += scrubAttributes(span.attributes);
 				}
 				if (scrubbed > 0) options.onScrub?.(scrubbed);
 			}

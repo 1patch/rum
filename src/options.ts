@@ -25,6 +25,13 @@ const TOKEN_SHAPE = /^op_[A-Za-z0-9_-]{16,}$/;
 /** Hosts where plain http is a normal thing to be pointing at. */
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "0.0.0.0"]);
 
+export type RumTraceDestination = {
+	/** Full OTLP HTTP traces endpoint, including its /v1/traces path. */
+	url: string;
+	/** Browser-safe, write-only ingest credentials for this destination. */
+	headers?: Record<string, string>;
+};
+
 export type RumOptions = {
 	/** Your tenant's OnePatch ingest URL, e.g. `https://acme.logger.onepatch.dev`. */
 	ingestUrl: string;
@@ -33,6 +40,20 @@ export type RumOptions = {
 	 * tenant — it is designed to ship in a frontend bundle, like a Sentry DSN.
 	 */
 	ingestToken: string;
+	/**
+	 * Keep existing OTLP destinations when RUM replaces a browser tracing SDK.
+	 * Every destination receives the same session-tagged, redacted spans. Their
+	 * origins are excluded from tracing automatically. Do not also initialize
+	 * the old tracer provider or its document/fetch/XHR instrumentations.
+	 */
+	additionalTraceDestinations?: RumTraceDestination[];
+	/**
+	 * Apply the app's existing URL redaction before ANY trace destination sees a
+	 * span. Called for URL attributes, including page and previous-route URLs.
+	 * A throwing callback or non-string result replaces that value with
+	 * "[redacted]". Runs before optional scrubQueryStrings.
+	 */
+	redactUrl?: (url: string) => string;
 	/**
 	 * A name for this frontend. Becomes `service.name`. Keep it stable: it is
 	 * the first column of the telemetry sort key, so every query pivots on it.
@@ -131,6 +152,8 @@ export type RumOptions = {
 export type ResolvedRumOptions = {
 	tracesUrl: string;
 	ingestToken: string;
+	additionalTraceDestinations: RumTraceDestination[];
+	redactUrl: ((url: string) => string) | undefined;
 	appName: string;
 	environment: string | undefined;
 	appVersion: string | undefined;
@@ -291,6 +314,51 @@ export function resolveBackends(
  */
 const DEFAULT_ASSET_FLOOR_MS = 100;
 
+function resolveDestinations(
+	raw: RumTraceDestination[] | undefined,
+	primary: string,
+): RumTraceDestination[] {
+	if (raw === undefined) return [];
+	if (!Array.isArray(raw)) {
+		throw new RumConfigError("additionalTraceDestinations must be an array of { url, headers? }.");
+	}
+	const seen = new Set([new URL(primary).href]);
+	return raw.map((destination, index) => {
+		const label = `additionalTraceDestinations[${index}]`;
+		let url: URL;
+		try {
+			url = new URL(destination.url);
+		} catch {
+			throw new RumConfigError(`${label}.url must be a full OTLP HTTP traces URL.`);
+		}
+		if (
+			(url.protocol !== "https:" && !(url.protocol === "http:" && LOCAL_HOSTS.has(url.hostname))) ||
+			url.username ||
+			url.password ||
+			url.hash
+		) {
+			throw new RumConfigError(
+				`${label}.url requires HTTPS (HTTP only on localhost), without URL credentials or a fragment.`,
+			);
+		}
+		if (seen.has(url.href)) {
+			throw new RumConfigError(`${label} duplicates another trace destination.`);
+		}
+		seen.add(url.href);
+		const headers = destination.headers;
+		if (
+			headers !== undefined &&
+			(headers === null ||
+				typeof headers !== "object" ||
+				Array.isArray(headers) ||
+				Object.values(headers).some((value) => typeof value !== "string"))
+		) {
+			throw new RumConfigError(`${label}.headers must contain string values.`);
+		}
+		return { url: url.href, headers: headers === undefined ? undefined : { ...headers } };
+	});
+}
+
 function resolveAssetFloor(raw: number | undefined): number {
 	if (raw === undefined) return DEFAULT_ASSET_FLOOR_MS;
 	if (typeof raw !== "number" || !Number.isFinite(raw) || raw < 0) {
@@ -310,6 +378,15 @@ export function resolveOptions(
 	}
 
 	const { tracesUrl, insecure } = resolveTracesUrl(required(options.ingestUrl, "ingestUrl"));
+	const additionalTraceDestinations = resolveDestinations(
+		options.additionalTraceDestinations,
+		tracesUrl,
+	);
+	if (options.redactUrl !== undefined && typeof options.redactUrl !== "function") {
+		throw new RumConfigError(
+			"redactUrl must be a function from a URL string to a redacted string.",
+		);
+	}
 
 	const ingestToken = required(options.ingestToken, "ingestToken");
 	if (!TOKEN_SHAPE.test(ingestToken)) {
@@ -344,6 +421,8 @@ export function resolveOptions(
 	return {
 		tracesUrl,
 		ingestToken,
+		additionalTraceDestinations,
+		redactUrl: options.redactUrl,
 		appName,
 		environment,
 		appVersion,
@@ -357,6 +436,7 @@ export function resolveOptions(
 		ignoreUrls: [
 			originMatcher(new URL(tracesUrl).origin),
 			PROBE_MATCHER,
+			...additionalTraceDestinations.map(({ url }) => originMatcher(new URL(url).origin)),
 			...(options.ignoreUrls ?? []),
 		],
 		scrubQueryStrings: options.scrubQueryStrings === true,

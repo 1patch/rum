@@ -6,7 +6,7 @@
 		"useIgnoreFile": true
 	},
 	"files": {
-		"includes": ["src/**/*.ts", "!**/node_modules", "!**/dist"]
+		"includes": ["src/**/*.ts", "test/browser/**/*.ts", "!**/node_modules", "!**/dist"]
 	},
 	"linter": {
 		"enabled": true

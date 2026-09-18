@@ -41,6 +41,8 @@ jobs:
       - run: bun run typecheck
       - run: bun test
       - run: bun run build
+      - run: bunx playwright install --with-deps chromium
+      - run: bun run test:browser
 
       # The published tarball is what customers actually get, so look at it here
       # rather than discovering its contents after a release.

@@ -29,7 +29,7 @@ import {
 import { type BackendCheck, checkBackend, originMatcher } from "./probe.js";
 import { type RumAttributes, type RumUser, userAttributes } from "./user.js";
 
-export type { RumOptions } from "./options.js";
+export type { RumOptions, RumTraceDestination } from "./options.js";
 export { RumConfigError } from "./options.js";
 export type { BackendCheck } from "./probe.js";
 export type { RumAttributes, RumIdentity, RumUser, RumUserResolver } from "./user.js";
@@ -194,6 +194,8 @@ export async function startRum(options: RumOptions): Promise<RumStatus> {
 			// Opt-in only (`scrubQueryStrings`). See ./exporter.ts for why this has to
 			// happen at the exporter rather than through the SDK's own remapping hook.
 			exporter: exporterOption({
+				additionalTraceDestinations: resolved.additionalTraceDestinations,
+				redactUrl: resolved.redactUrl,
 				scrubQueryStrings: resolved.scrubQueryStrings,
 				onScrub: resolved.debug
 					? (count) => console.info(`${PREFIX} scrubbed query strings from ${count} attributes`)
