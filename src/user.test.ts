@@ -71,3 +71,20 @@ describe("userAttributes", () => {
 		expect(userAttributes(null as unknown as Record<string, string>)).toEqual({});
 	});
 });
+
+test("staff identity is distinct from the customer and explicitly clearable", () => {
+	expect(
+		userAttributes({
+			email: "customer@example.com",
+			actorEmail: "staff@example.com",
+			impersonating: true,
+		}),
+	).toEqual({
+		"user.email": "customer@example.com",
+		"actor.email": "staff@example.com",
+		impersonating: true,
+	});
+	expect(
+		userAttributes({ actorEmail: null, actorId: null, actorName: null, impersonating: false }),
+	).toEqual({ "actor.email": "", "actor.id": "", "actor.name": "", impersonating: false });
+});

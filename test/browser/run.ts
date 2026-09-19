@@ -93,11 +93,12 @@ try {
 		await page.evaluate(() => (window as unknown as { rumStatus: unknown }).rumStatus),
 		{ started: true, identified: true, backends: [] },
 	);
+	await page.locator("#run-selected span").click();
 	await page.evaluate("window.runJourney()");
 	await page.waitForTimeout(1200);
 	await page.evaluate("window.flush()");
 	await page.waitForTimeout(300);
-	assert.equal(apiRequests, 2);
+	assert.equal(apiRequests, 3);
 	assert.deepEqual(errors, []);
 	const left = flatten(received.primary);
 	const right = flatten(received.secondary);
@@ -130,6 +131,26 @@ try {
 			assert.equal(span.values["service.version"], "browser-fixture");
 			assert.equal(span.values["deployment.environment.name"], "test");
 		}
+		const click = spans.find(
+			(s) => s.name === "click" && s.values["target.label"] === "Run selected rows",
+		);
+		assert.ok(click, "explicit label is inherited from the containing control");
+		assert.ok(
+			!spans.some((s) => s.name === "mousedown" || s.name === "mouseup"),
+			"no mouse bookkeeping",
+		);
+		const request = spans.find((s) => String(s.values["http.url"]).includes("/api/control"));
+		assert.ok(request);
+		assert.equal(request.traceId, click.traceId, "control request retains the click trace");
+		assert.ok(
+			spans.some(
+				(s) =>
+					s.spanId === request.parentSpanId &&
+					s.name === "click" &&
+					s.values["target.label"] === "Run selected rows",
+			),
+			"request retains an exported labeled click parent even with multiple listeners",
+		);
 		const serialized = JSON.stringify(spans);
 		assert.ok(
 			!serialized.includes("secret-") && !serialized.includes("person%40example.com"),
@@ -157,7 +178,7 @@ try {
 	await page.waitForTimeout(300);
 	assert.equal(flatten(received.primary).filter((s) => s.name === "business-action").length, 2);
 	assert.equal(flatten(received.secondary).filter((s) => s.name === "business-action").length, 1);
-	assert.equal(apiRequests, 4);
+	assert.equal(apiRequests, 5);
 	assert.deepEqual(errors, []);
 	console.log(
 		`Browser dual-destination regression passed (${await browser.version()}); session, identity, URL redaction, single request spans, both collectors, and secondary failure verified.`,

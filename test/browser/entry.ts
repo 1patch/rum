@@ -69,4 +69,14 @@ w.logout = () => {
 	identifyUser({ id: null, email: null, name: null, orgId: null, orgName: null });
 	recordAction("after-logout");
 };
+const button = document.createElement("button");
+button.id = "run-selected";
+button.dataset.rumLabel = "Run selected rows";
+button.innerHTML = "<span>secret-customer-text</span>";
+button.addEventListener("click", () => {
+	void fetch("/api/control");
+});
+button.addEventListener("mousedown", () => {});
+button.addEventListener("mouseup", () => {});
+document.body.append(button);
 w.ready = true;

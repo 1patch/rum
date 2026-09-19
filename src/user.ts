@@ -33,6 +33,10 @@ export type RumUser = {
 	orgId?: RumAttributeUpdate;
 	/** Its name, for the same reason `name` is worth passing. */
 	orgName?: RumAttributeUpdate;
+	/** Staff member operating an impersonated session; the user above remains the customer. Clear on exit. */
+	actorId?: RumAttributeUpdate;
+	actorEmail?: RumAttributeUpdate;
+	actorName?: RumAttributeUpdate;
 	/** Anything else worth filtering sessions by, e.g. `plan: "enterprise"`. */
 	[key: string]: RumAttributeUpdate | undefined;
 };
@@ -70,6 +74,9 @@ const ATTRIBUTE_NAMES: Record<string, string> = {
 	name: "user.name",
 	orgId: "org.id",
 	orgName: "org.name",
+	actorId: "actor.id",
+	actorEmail: "actor.email",
+	actorName: "actor.name",
 };
 
 /** Clearing a field is meaningful, so an explicit `null` maps to an empty string. */

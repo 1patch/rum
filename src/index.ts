@@ -19,6 +19,7 @@
 
 import Rum from "@hyperdx/otel-web";
 import { exporterOption } from "./exporter.js";
+import { interactionInstrumentation } from "./interactions.js";
 import {
 	type ResolvedRumOptions,
 	RumConfigError,
@@ -212,7 +213,7 @@ export async function startRum(options: RumOptions): Promise<RumStatus> {
 			instrumentations: {
 				document: true,
 				errors: true,
-				interactions: true,
+				interactions: interactionInstrumentation,
 				webvitals: true,
 				visibility: true,
 				fetch: { propagateTraceHeaderCorsUrls: propagateTo },
