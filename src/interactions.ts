@@ -19,9 +19,9 @@ export const interactionInstrumentation = {
 		try {
 			// Only an explicit, developer-authored label. Never read textContent,
 			// value, aria-label or a table row, which can contain customer data.
-			const control = element.closest("[data-rum-label]");
+			const control = element.closest("[data-op-rum-label]");
 			const label = control
-				?.getAttribute("data-rum-label")
+				?.getAttribute("data-op-rum-label")
 				?.replace(/\s+/g, " ")
 				.trim()
 				.slice(0, 120);

@@ -204,7 +204,7 @@ Source lives at [github.com/1patch/rum](https://github.com/1patch/rum). Security
 
 ### Readable controls and impersonation
 
-Add a static `data-rum-label="Run selected rows"` to a control (or its containing button).
+Add a static `data-op-rum-label="Run selected rows"` to a control (or its containing button).
 Clicks on nested icons inherit the label. The SDK never derives labels from page
 text or input values. Mouse-down/up bookkeeping is excluded; clicks, changes,
 submits, navigation and their request spans are retained. Multiple listeners can

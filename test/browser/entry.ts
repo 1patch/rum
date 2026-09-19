@@ -71,7 +71,7 @@ w.logout = () => {
 };
 const button = document.createElement("button");
 button.id = "run-selected";
-button.dataset.rumLabel = "Run selected rows";
+button.dataset.opRumLabel = "Run selected rows";
 button.innerHTML = "<span>secret-customer-text</span>";
 button.addEventListener("click", () => {
 	void fetch("/api/control");
