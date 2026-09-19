@@ -201,3 +201,16 @@ Source lives at [github.com/1patch/rum](https://github.com/1patch/rum). Security
 ### Identity changes during startup
 
 `startRum()` initializes tracing synchronously; its promise also waits for identity and backend probes. Connect auth-change listeners immediately after calling it, so logout and workspace changes do not wait for the probes. Keep an unresolved auth state pending in the initial resolver instead of returning `null` before auth has answered. Explicit `identifyUser()` updates take precedence over a late initial resolver, including `null` clears. If the app lazy-loads RUM, keep its React identity state module free of runtime SDK imports and pass an update callback from the lazy initializer.
+
+### Readable controls and impersonation
+
+Add a static `data-rum-label="Run selected rows"` to a control (or its containing button).
+Clicks on nested icons inherit the label. The SDK never derives labels from page
+text or input values. Mouse-down/up bookkeeping is excluded; clicks, changes,
+submits, navigation and their request spans are retained. Multiple listeners can
+still produce separate spans in one trace; keep those IDs for correlation.
+
+When staff impersonate a customer, keep the customer in `id`/`email` and supply
+`impersonating: true, actorEmail: staff.email` (also `actorId`/`actorName` if known).
+On exit or logout explicitly clear the actor fields and set `impersonating: false`.
+Missing actor data is left unknown; never infer it from the impersonated user.

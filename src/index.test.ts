@@ -119,7 +119,9 @@ describe("startRum", () => {
 	test("names every instrumentation explicitly", async () => {
 		await startRum(valid);
 		const instrumentations = calls.init[0]?.instrumentations ?? {};
-		expect(instrumentations.interactions).toBe(true);
+		expect(instrumentations.interactions).toMatchObject({
+			eventNames: expect.arrayContaining(["click", "change", "submit"]),
+		});
 		expect(instrumentations.errors).toBe(true);
 		expect(instrumentations.document).toBe(true);
 		expect(instrumentations.console).toBe(false);
