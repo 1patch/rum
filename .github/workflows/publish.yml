@@ -12,19 +12,8 @@ permissions:
   contents: read
 
 jobs:
-  publish:
-    runs-on: ubuntu-latest
-
-    # The `npm` environment carries the required-reviewer rule. Even someone who
-    # can push to main cannot publish without a second pair of eyes clicking
-    # approve, and the OIDC identity below is scoped to this environment.
-    environment: npm
-
-    permissions:
-      contents: read
-      # Mints the short-lived OIDC token npm exchanges for publish rights and
-      # stamps into the provenance attestation. No long-lived npm token exists.
-      id-token: write
+  build:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -63,10 +52,34 @@ jobs:
             exit 1
           fi
 
-      # No --access/--provenance flags: both come from publishConfig, so the
-      # local `npm publish` a human might run behaves identically.
-      #
-      # npmjs.com renders the README from the tarball this step uploads, not from
-      # main — so a docs-only change is invisible on the package page until a
-      # version ships. That is a reason to cut a patch release, not a bug.
-      - run: npm publish
+      - name: Pack the verified npm package
+        run: mkdir -p release-package && npm pack --ignore-scripts --pack-destination release-package
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: npm-package
+          path: release-package/*.tgz
+          retention-days: 1
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    # npm trusted publishing requires a GitHub-hosted runner. Keep only the
+    # final publish here; builds and tests run on Blacksmith.
+    # https://docs.npmjs.com/trusted-publishers/
+    runs-on: ubuntu-24.04
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - run: npm install -g npm@latest
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: npm-package
+          path: release-package
+      - run: npm publish release-package/*.tgz --ignore-scripts

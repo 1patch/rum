@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       # Actions are pinned by commit sha, not by tag: a tag can be moved to point
       # at new code, and an action runs with access to this job's filesystem.
